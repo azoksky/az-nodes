@@ -8,14 +8,8 @@ import shutil
 from pathlib import Path
 
 # --- Env ---
-os.environ['PYTHONDONTWRITEBYTECODE'] = '1'
-os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
-os.environ['PYTHONWARNINGS'] = 'ignore'
-os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = "1"
 os.environ["COMFYUI_PATH"] = "/workspace/ComfyUI"
 os.environ["COMFYUI_MODEL_PATH"] = "/workspace/ComfyUI/models"
-
-
 workspace = Path("/workspace")
 COMFY = workspace / "ComfyUI"
 CUSTOM = COMFY / "custom_nodes"
@@ -65,12 +59,6 @@ def bg_install_impact():
 def main():
     workspace.mkdir(parents=True, exist_ok=True)
 
-    snapshot_download(
-        token=os.environ["HF_READ_TOKEN"],
-        repo_id="azoksky/retention",
-        allow_patterns=["*wan*"],
-        local_dir="/workspace")
-
     # 1) Clone core ComfyUI
     if not COMFY.exists():
         clone("https://github.com/comfyanonymous/ComfyUI.git", COMFY)
@@ -105,10 +93,15 @@ def main():
         ("https://github.com/nunchaku-tech/ComfyUI-nunchaku.git",           "ComfyUI-nunchaku"),
     ]:
         clone(repo, CUSTOM / name)
-    
+    snapshot_download(
+        token=os.environ["HF_READ_TOKEN"],
+        repo_id="azoksky/retention",
+        allow_patterns=["*wan*"],
+        local_dir="/workspace")
     move_children(Path("/workspace/wan"), Path("/workspace/ComfyUI/models"))
 
     print(f"🚀 SUCCCESSFUL.. NOW RUN COMFY")
 
 if __name__ == "__main__":
     main()
+
