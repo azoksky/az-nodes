@@ -93,6 +93,7 @@ def main():
         ("https://github.com/nunchaku-tech/ComfyUI-nunchaku.git",           "ComfyUI-nunchaku"),
     ]:
         clone(repo, CUSTOM / name)
+    print(f"Downloading models now.....")
     snapshot_download(
         token=os.environ["HF_READ_TOKEN"],
         repo_id="azoksky/retention",
@@ -101,7 +102,15 @@ def main():
     move_children(Path("/workspace/wan"), Path("/workspace/ComfyUI/models"))
 
     print(f"🚀 SUCCCESSFUL.. NOW RUN COMFY")
+    subprocess.Popen([
+        "python", "-B", "./ComfyUI/main.py",
+        "--listen",
+        "--preview-method", "latent2rgb",
+        "--use-sage-attention",
+        "--fast"
+    ], cwd="/workspace")
 
 if __name__ == "__main__":
     main()
+
 
