@@ -377,11 +377,13 @@ async def aria2_stop(request):
 class Aria2Downloader:
     @classmethod
     def INPUT_TYPES(cls):
-        return {"required": {}}  # no backend auto-widgets
+        return {"required": {}}
 
     RETURN_TYPES = ()
     FUNCTION = "noop"
     CATEGORY = "AZ_Nodes"
+    OUTPUT_NODE = False   # <-- add this
 
     def noop(self):
         return ()
+
