@@ -106,7 +106,7 @@ app.registerExtension({
 
     // Add DOM widget with fixed min height
     const MIN_W = 460;
-    const MIN_H = 190;
+    const MIN_H = 210;
     node.addDOMWidget("hf_downloader", "dom", wrap, {
       serialize: false,
       hideOnZoom: false,
