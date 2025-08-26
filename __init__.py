@@ -1,7 +1,7 @@
 
 #from .generate_clip_prompt_node import GenerateCLIPPromptNode
 from .extra_node import AzInput, OverrideCLIPDevice, FluxResolutionNode, GetImageSizeRatio, OverrideVAEDevice, OverrideMODELDevice,PurgeVRAM, PurgeVRAM_V2, AnyType
-from .path_uploader import UploadToAnyPath
+from .path_uploader import PathUploader
 from .Downloader_helper import Aria2Downloader
 
 
@@ -17,7 +17,7 @@ NODE_CLASS_MAPPINGS = {
     "GetImageSizeRatio": GetImageSizeRatio,
     "PurgeVRAM_V1": PurgeVRAM,
     "PurgeVRAM_V2": PurgeVRAM_V2,
-    "UploadToAnyPath": UploadToAnyPath
+    "PathUploader": PathUploader
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
@@ -31,7 +31,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "GetImageSizeRatio": "Get Image Size Ratio",
     "PurgeVRAM": "Purge VRAM V1",
     "PurgeVRAM_V2": "Purge VRAM V2",
-    "UploadToAnyPath": "Path Uploader"
+    "PathUploader": "Path Uploader"
     
 }
 
