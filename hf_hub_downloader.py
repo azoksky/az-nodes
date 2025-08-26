@@ -8,11 +8,11 @@ from uuid import uuid4
 from typing import Dict, Any
 from concurrent.futures import ThreadPoolExecutor
 import threading
-import weakref
+import glob
 
 from aiohttp import web
 from server import PromptServer
-from huggingface_hub import HfApi, hf_hub_download
+from huggingface_hub import HfApi
 
 # Setup logging
 logging.basicConfig(level=logging.DEBUG)
@@ -37,6 +37,24 @@ def _eta(total, done, speed):
         return int(rem / speed)
     return None
 
+def parse_bytes(s: str) -> int:
+    units = {'B': 1, 'kB': 1024, 'MB': 1024**2, 'GB': 1024**3, 'TB': 1024**4}
+    match = re.match(r"(\d+[.\d]*)([kMG]B)?", s.strip())
+    if match:
+        num = float(match.group(1))
+        unit = match.group(2) or 'B'
+        return int(num * units.get(unit, 1))
+    return 0
+
+def parse_eta(eta_str: str) -> int:
+    if not eta_str:
+        return None
+    parts = eta_str.split(':')
+    secs = 0
+    for i, p in enumerate(reversed(parts)):
+        secs += int(p) * (60 ** i)
+    return secs
+
 def _cleanup_download(gid: str):
     """Thread-safe cleanup of download resources"""
     with _cleanup_lock:
@@ -52,21 +70,19 @@ def _schedule_cleanup(gid: str, delay: float = 10.0):
     thread = threading.Thread(target=delayed_cleanup, daemon=True)
     thread.start()
 
-# ========= Async download function using hf_hub_download =========
+# ========= Async download function =========
 async def _download_file_async(gid: str, repo_id: str, filename: str, dest_dir: str, token: str = None):
-    """Async download function using hf_hub_download with file size polling for progress"""
+    """Async download using huggingface_cli with progress parsing"""
     info = _downloads[gid]
     final_path = os.path.join(dest_dir, _sanitize_filename(filename))
-    tmp_path = final_path + ".part"  # Temporary file used by hf_hub_download
     info["filepath"] = final_path
     logger.debug(f"Starting download: repo_id={repo_id}, filename={filename}, dest_dir={dest_dir}")
 
     try:
-        # Get file info to set total size and verify existence
+        # Get file info for total size and verify existence (optional, but helps if CLI doesn't provide)
         def get_file_info():
             api = HfApi(token=token) if token else HfApi()
             try:
-                # Use get_paths_info (available in huggingface_hub >= 0.23.0)
                 try:
                     paths_info = api.get_paths_info(repo_id=repo_id, repo_type="model", paths=[filename])
                     if not paths_info or filename not in [p.path for p in paths_info]:
@@ -76,102 +92,106 @@ async def _download_file_async(gid: str, repo_id: str, filename: str, dest_dir: 
                     logger.debug(f"File info retrieved: size={size} bytes")
                     return size
                 except AttributeError:
-                    # Fallback for older versions: use list_repo_files
                     files = api.list_repo_files(repo_id=repo_id, repo_type="model")
                     if filename not in files:
                         raise ValueError(f"File {filename} not found in repo {repo_id}")
-                    logger.debug("File exists, but size unavailable (older huggingface_hub version)")
+                    logger.debug("File exists, but size unavailable")
                     return 0
             except Exception as e:
                 logger.error(f"Failed to get file info: {str(e)}")
-                raise ValueError(f"Failed to get file info: {str(e)}")
-        
+                raise
+
         total = await asyncio.get_event_loop().run_in_executor(_executor, get_file_info)
         info["totalLength"] = total
         info["status"] = "active"
-        logger.debug(f"Total size set: {total} bytes")
 
-        # Start progress polling
-        async def poll_progress():
-            last_downloaded = 0
-            last_update = time.time()
-            while info["status"] == "active" and not _stop_flags.get(gid, False):
-                try:
-                    downloaded = os.path.getsize(tmp_path) if os.path.exists(tmp_path) else 0
-                    info["completedLength"] = downloaded
-                    if total > 0:
-                        info["percent"] = min(100.0, (downloaded / total) * 100.0)
-                    else:
-                        info["percent"] = 0.0  # Avoid undefined percent
-                    logger.debug(f"Progress: downloaded={downloaded}, percent={info['percent']:.1f}%")
+        # Build command
+        cmd = ['huggingface-cli', 'download', repo_id, filename, '--local-dir', dest_dir]
+        if token:
+            cmd += ['--token', token]
 
-                    now = time.time()
-                    if now - last_update >= 0.5:  # Update every 500ms
-                        dt = now - last_update
-                        speed = (downloaded - last_downloaded) / dt if dt > 0 else 0
-                        info["downloadSpeed"] = int(speed)
-                        info["eta"] = _eta(total, downloaded, speed)
-                        last_update = now
-                        last_downloaded = downloaded
-                    
-                    await asyncio.sleep(0.5)  # Poll every 500ms
-                except Exception as e:
-                    logger.debug(f"Transient error in poll_progress: {str(e)}")
-                    await asyncio.sleep(0.5)
-                    continue
+        # Start subprocess
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE
+        )
 
-        # Run hf_hub_download in thread pool
-        def download_file():
-            result = hf_hub_download(
-                repo_id=repo_id,
-                filename=filename,
-                local_dir=dest_dir,
-                local_dir_use_symlinks=False,
-                token=token
-            )
-            logger.debug(f"Download completed: {result}")
-            return result
+        last_update = time.time()
+        last_downloaded = 0
 
-        # Start polling task
-        polling_task = asyncio.create_task(poll_progress())
+        while True:
+            # Read from stdout and stderr
+            tasks = [
+                asyncio.create_task(proc.stdout.readline()),
+                asyncio.create_task(proc.stderr.readline())
+            ]
+            done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+            for task in done:
+                line = task.result()
+                if line:
+                    line = line.decode('utf-8').strip()
+                    if line:
+                        logger.debug(f"CLI output: {line}")
+                        # Parse progress line
+                        match = re.search(r"(\d+)% ([\d.]+[kMG]?B?)/([\d.]+[kMG]?B?)\s*\[.*? < (.*?), ([\d.]+[kMG]?B?/s)\]", line)
+                        if match:
+                            percent = int(match.group(1))
+                            completed = parse_bytes(match.group(2))
+                            total_from_cli = parse_bytes(match.group(3))
+                            eta_str = match.group(4)
+                            speed_str = match.group(5)
 
-        try:
-            await asyncio.get_event_loop().run_in_executor(_executor, download_file)
+                            info["percent"] = percent
+                            info["completedLength"] = completed
+                            info["totalLength"] = total_from_cli if info["totalLength"] == 0 else info["totalLength"]
+                            info["downloadSpeed"] = parse_bytes(speed_str.rstrip('/s'))
+                            info["eta"] = parse_eta(eta_str)
+
+                            logger.debug(f"Parsed progress: percent={percent}, completed={completed}, total={info['totalLength']}, speed={info['downloadSpeed']}, eta={info['eta']}")
+
+            # Check if process done
+            if proc.returncode is not None:
+                break
+
+            # Check stop flag
+            if _stop_flags.get(gid, False):
+                proc.terminate()
+                await proc.wait()
+                info["status"] = "stopped"
+                break
+
+            await asyncio.sleep(0.1)  # Small sleep to avoid busy loop
+
+        await proc.wait()
+
+        if proc.returncode == 0 and info["status"] != "stopped":
             info["status"] = "complete"
             info["percent"] = 100.0
-            logger.debug("Download marked as complete")
-        except asyncio.CancelledError:
-            polling_task.cancel()
-            logger.debug("Download cancelled")
-            raise
-        except Exception as e:
-            polling_task.cancel()
-            logger.error(f"Download failed: {str(e)}")
-            raise
-        finally:
-            polling_task.cancel()  # Ensure polling stops
+            logger.debug("Download complete")
+        else:
+            info["status"] = "error"
+            info["error"] = "Download failed or stopped"
+            logger.debug("Download failed or stopped")
 
-    except asyncio.CancelledError:
-        info["status"] = "stopped"
-        # Clean up partial download
-        if os.path.exists(tmp_path):
-            try:
-                os.remove(tmp_path)
-                logger.debug(f"Cleaned up partial file: {tmp_path}")
-            except Exception as e:
-                logger.error(f"Failed to clean up partial file: {str(e)}")
     except Exception as e:
         info["status"] = "error"
         info["error"] = str(e)
-        if os.path.exists(tmp_path):
-            try:
-                os.remove(tmp_path)
-                logger.debug(f"Cleaned up partial file: {tmp_path}")
-            except Exception as e:
-                logger.error(f"Failed to clean up partial file: {str(e)}")
+        logger.error(f"Download error: {str(e)}")
     finally:
-        # Schedule cleanup
-        logger.debug(f"Scheduling cleanup for gid={gid}")
+        # Cleanup partial files (final_path.tmp.* or .part)
+        if info["status"] != "complete":
+            if os.path.exists(final_path):
+                try:
+                    os.remove(final_path)
+                except:
+                    pass
+            for tmp_file in glob.glob(final_path + ".tmp.*") + glob.glob(final_path + ".part"):
+                try:
+                    os.remove(tmp_file)
+                    logger.debug(f"Cleaned up partial file: {tmp_file}")
+                except:
+                    pass
         _schedule_cleanup(gid)
 
 # Store active download tasks
@@ -314,7 +334,7 @@ class hf_hub_downloader:
     def INPUT_TYPES(cls):
         return {"required": {}}
 
-    RETURN_TYPES = []
+    RETURN_TYPES = ()
     FUNCTION = "noop"
     CATEGORY = "AZ_Nodes"
 
