@@ -1,7 +1,7 @@
 
 #from .generate_clip_prompt_node import GenerateCLIPPromptNode
 from .extra_node import AzInput, OverrideCLIPDevice, FluxResolutionNode, GetImageSizeRatio, OverrideVAEDevice, OverrideMODELDevice,PurgeVRAM, PurgeVRAM_V2, AnyType
-from .path_uploader import PathUploader,add_routes
+from .path_uploader import PathUploader
 from .Downloader_helper import Aria2Downloader
 
 
