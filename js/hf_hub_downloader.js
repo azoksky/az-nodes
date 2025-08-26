@@ -243,10 +243,10 @@ app.registerExtension({
     destInput.addEventListener("blur", hideDropdownSoon);
 
     // keep overlay sane on viewport changes
-    const onScroll = () => hideDropdownSoon();
-    const onResize = () => hideDropdownSoon();
-    window.addEventListener("scroll", onScroll, true);
-    window.addEventListener("resize", onResize);
+    // const onScroll = () => hideDropdownSoon();
+    // const onResize = () => hideDropdownSoon();
+    // window.addEventListener("scroll", onScroll, true);
+    // window.addEventListener("resize", onResize);
 
     // Add DOM widget with fixed min height (unchanged)
     const MIN_W = 460;
