@@ -247,7 +247,7 @@ app.registerExtension({
         try {
           resp = await api.fetchApi("/aria2/start", {
             method: "POST",
-            body: JSON.stringify({ url, dest_dir: dest }),
+            body: JSON.stringify({ url, dest_dir: dest, token: (tokenInput.value || "").trim() }),
           });
           data = await resp.json();
         } catch {
@@ -382,6 +382,7 @@ app.registerExtension({
     };
   },
 });
+
 
 
 
