@@ -13,7 +13,7 @@ import weakref
 
 from aiohttp import web
 from server import PromptServer
-from huggingface_hub import HfApi, hf_hub_url
+from huggingface_hub import HfApi, hf_hub_download
 
 # ========= Progress store with automatic cleanup =========
 _downloads: Dict[str, Dict[str, Any]] = {}
@@ -49,111 +49,79 @@ def _schedule_cleanup(gid: str, delay: float = 10.0):
     thread = threading.Thread(target=delayed_cleanup, daemon=True)
     thread.start()
 
-# ========= Async download function =========
+# ========= Async download function using hf_hub_download =========
 async def _download_file_async(gid: str, repo_id: str, filename: str, dest_dir: str, token: str = None):
-    """Async download function that doesn't block the event loop"""
+    """Async download function using hf_hub_download"""
     info = _downloads[gid]
-    session = None
-    tmp_path = None
-    
+    final_path = os.path.join(dest_dir, _sanitize_filename(filename))
+    info["filepath"] = final_path
+
     try:
-        # Get file info first
+        # Get file info to set total size
         def get_file_info():
             api = HfApi(token=token) if token else HfApi()
             try:
-                file_info = api.repo_file_info(repo_id=repo_id, path_in_repo=filename)
+                file_info = api.file_metadata(repo_id=repo_id, repo_type="model", path_in_repo=filename)
                 return int(file_info.size or 0)
             except Exception:
                 return 0
         
-        # Run file info check in thread pool to avoid blocking
         total = await asyncio.get_event_loop().run_in_executor(_executor, get_file_info)
         info["totalLength"] = total
-        
-        url = hf_hub_url(repo_id=repo_id, filename=filename)
-        headers = {
-            "User-Agent": "ComfyUI-HF-Downloader",
-            "Accept": "*/*"
-        }
-        if token:
-            headers["Authorization"] = f"Bearer {token}"
+        info["status"] = "active"
 
-        tmp_path = os.path.join(dest_dir, _sanitize_filename(filename) + ".part")
-        final_path = os.path.join(dest_dir, _sanitize_filename(filename))
-        info["filepath"] = final_path
-        
-        # Use aiohttp for truly async downloads
-        timeout = aiohttp.ClientTimeout(total=None, connect=30, sock_read=60)
-        async with aiohttp.ClientSession(timeout=timeout, headers=headers) as session:
-            info["status"] = "active"
+        # Progress callback for hf_hub_download
+        def progress_callback(downloaded: int, total_size: int):
+            if _stop_flags.get(gid, False):
+                raise asyncio.CancelledError("Download stopped by user")
             
-            async with session.get(url) as response:
-                response.raise_for_status()
-                
-                # Track progress
-                downloaded = 0
-                last_update = time.time()
-                last_downloaded = 0
-                chunk_size = 1024 * 64  # 64KB chunks
-                
-                async with aiofiles.open(tmp_path, 'wb') as f:
-                    async for chunk in response.content.iter_chunked(chunk_size):
-                        # Check stop flag
-                        if _stop_flags.get(gid, False):
-                            info["status"] = "stopped"
-                            break
-                        
-                        await f.write(chunk)
-                        downloaded += len(chunk)
-                        info["completedLength"] = downloaded
-                        
-                        # Update progress periodically
-                        now = time.time()
-                        if now - last_update >= 0.5:  # Update every 500ms
-                            dt = now - last_update
-                            speed = (downloaded - last_downloaded) / dt
-                            info["downloadSpeed"] = int(speed)
-                            
-                            if total > 0:
-                                info["percent"] = min(100.0, (downloaded / total) * 100.0)
-                            info["eta"] = _eta(total, downloaded, speed)
-                            
-                            last_update = now
-                            last_downloaded = downloaded
-                            
-                            # Yield control to prevent blocking
-                            await asyncio.sleep(0.001)
-        
-        # Handle completion
-        if info["status"] == "stopped":
-            if os.path.exists(tmp_path):
-                await asyncio.get_event_loop().run_in_executor(_executor, os.remove, tmp_path)
-            return
-        
-        # Move file to final location
-        def move_file():
-            if os.path.exists(final_path):
-                os.remove(final_path)
-            os.rename(tmp_path, final_path)
-        
-        await asyncio.get_event_loop().run_in_executor(_executor, move_file)
+            now = time.time()
+            info["completedLength"] = downloaded
+            if total_size > 0:
+                info["percent"] = min(100.0, (downloaded / total_size) * 100.0)
+            
+            # Update speed and ETA every 500ms
+            if not hasattr(info, "last_update"):
+                info["last_update"] = now
+                info["last_downloaded"] = 0
+            if now - info["last_update"] >= 0.5:
+                dt = now - info["last_update"]
+                speed = (downloaded - info["last_downloaded"]) / dt
+                info["downloadSpeed"] = int(speed)
+                info["eta"] = _eta(total_size, downloaded, speed)
+                info["last_update"] = now
+                info["last_downloaded"] = downloaded
+
+        # Run hf_hub_download in thread pool to avoid blocking event loop
+        def download_file():
+            return hf_hub_download(
+                repo_id=repo_id,
+                filename=filename,
+                local_dir=dest_dir,
+                local_dir_use_symlinks=False,
+                token=token,
+                progress_callback=progress_callback
+            )
+
+        await asyncio.get_event_loop().run_in_executor(_executor, download_file)
         
         info["status"] = "complete"
         info["percent"] = 100.0
-        
+
     except asyncio.CancelledError:
         info["status"] = "stopped"
-        if tmp_path and os.path.exists(tmp_path):
+        # Clean up partial download
+        if os.path.exists(final_path):
             try:
-                os.remove(tmp_path)
+                os.remove(final_path)
             except:
                 pass
     except Exception as e:
         info["status"] = "error"
         info["error"] = str(e)
-        if tmp_path and os.path.exists(tmp_path):
+        if os.path.exists(final_path):
             try:
-                os.remove(tmp_path)
+                os.remove(final_path)
             except:
                 pass
     finally:
@@ -187,7 +155,7 @@ async def hf_start(request):
         return web.json_response({"error": f"Cannot access destination: {e}"}, status=400)
 
     gid = uuid4().hex
-    token = os.environ.get("hf_read_token") or os.environ.get("HF_TOKEN")
+    token = os.environ.get("HF_READ_TOKEN") or os.environ.get("HF_TOKEN")
 
     # Initialize download info
     info = {
