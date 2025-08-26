@@ -189,7 +189,18 @@ app.registerExtension({
       window.addEventListener("resize", onResize);
 
       // --- Inputs (URL + button) ---
-      this.addWidget("text", "URL", this.properties.url, v => this.properties.url = v ?? "");
+      //this.addWidget("text", "URL", this.properties.url, v => this.properties.url = v ?? "");
+      const url = document.createElement("input");
+      url.type="text";
+      url.placeholder="URL)";
+      Object.assign(url.style,{
+        width:"100%", height:"26px", padding:"2px 8px",
+        border:"1px solid #444", borderRadius:"6px",
+        background:"var(--comfy-input-bg, #2a2a2a)", color:"#ddd",
+        boxSizing:"border-box", outline:"none"
+      }); 
+      url.value = this.properties.url;
+      container.appendChild(url);
 
       // --- State for progress view ---
       this.gid = null;
@@ -356,3 +367,4 @@ app.registerExtension({
     };
   },
 });
+
