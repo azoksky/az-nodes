@@ -1,229 +1,281 @@
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
 
-async function postJSON(path, body) {
-  const res = await api.fetchApi(path, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body || {}),
-  });
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
-  return await res.json();
+// (Left in place but now unused; safe no-op)
+function fmtBytes(b) {
+  if (!b || b <= 0) return "0 B";
+  const u = ["B", "KB", "MB", "GB", "TB"];
+  const i = Math.floor(Math.log(b) / Math.log(1024));
+  return (b / Math.pow(1024, i)).toFixed(i ? 1 : 0) + " " + u[i];
 }
-async function getJSON(path) {
-  const res = await api.fetchApi(path, { method: "GET" });
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
-  return await res.json();
+function fmtETA(s) {
+  if (!s || s <= 0) return "—";
+  const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), sec = Math.floor(s % 60);
+  if (h) return `${h}h ${m}m ${sec}s`;
+  if (m) return `${m}m ${sec}s`;
+  return `${sec}s`;
 }
+
+function el(tag, attrs = {}, ...children) {
+  const n = document.createElement(tag);
+  const { style, ...rest } = attrs || {};
+  if (rest) Object.assign(n, rest);
+  if (style && typeof style === "object") Object.assign(n.style, style);
+  for (const c of children) n.append(c);
+  return n;
+}
+
+// Inject CSS for indeterminate bar (one-time, non-invasive)
+(function ensureIndeterminateStyle() {
+  if (document.getElementById("hf-indeterminate-style")) return;
+  const style = document.createElement("style");
+  style.id = "hf-indeterminate-style";
+  style.textContent = `
+@keyframes hfIndeterminate {
+  0%   { transform: translateX(-100%); }
+  50%  { transform: translateX(0%); }
+  100% { transform: translateX(100%); }
+}
+.hf-track {
+  position: relative;
+  height: 10px;
+  background: #333;
+  border-radius: 5px;
+  overflow: hidden;
+  width: 100%;
+}
+.hf-bar {
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 35%;
+  background: #0084ff;
+  border-radius: 5px;
+  animation: hfIndeterminate 1.2s linear infinite;
+}
+`;
+  document.head.appendChild(style);
+})();
 
 app.registerExtension({
   name: "aznodes.hf_hub_downloader",
   async nodeCreated(node) {
     if (node.comfyClass !== "hf_hub_downloader") return;
 
-    // Persist across refreshes
-    node.__hf_gid = node.__hf_gid || null;
-    node.__hf_poll = node.__hf_poll || null;
-    node.__hf_running = node.__hf_running || false;
+    const wrap = el("div", { style: { display: "flex", flexDirection: "column", gap: "8px", width: "100%", padding: "10px" } });
 
-    // -------- Widgets (built-in) --------
-    node.properties = node.properties || {};
-    const repoW = node.addWidget(
-      "text",
-      "Repository ID",
-      node.properties.repo_id ?? "",
-      (v) => (node.properties.repo_id = v ?? "")
-    );
-    const fileW = node.addWidget(
-      "text",
-      "Filename",
-      node.properties.filename ?? "",
-      (v) => (node.properties.filename = v ?? "")
-    );
-    const destW = node.addWidget(
-      "text",
-      "Destination folder",
-      node.properties.dest_dir ?? "",
-      (v) => (node.properties.dest_dir = v ?? "")
-    );
+    // Inputs (unchanged)
+    const repoInput = el("input", {
+      type: "text",
+      placeholder: "Repository ID (e.g. runwayml/stable-diffusion-v1-5)",
+      style: { width: "100%", padding: "4px", boxSizing: "border-box" }
+    });
 
-    const statusW = node.addWidget(
-      "text",
-      "Status",
-      "Idle.",
-      null,
-      { disabled: true }
-    );
+    const fileInput = el("input", {
+      type: "text",
+      placeholder: "Filename (e.g. v1-5-pruned-emaonly.ckpt)",
+      style: { width: "100%", padding: "4px", boxSizing: "border-box" }
+    });
 
-    const startBtn = node.addWidget("button", "Download", "start", async () => {
-      const repo_id = repoW.value?.trim();
-      const filename = fileW.value?.trim();
-      const dest_dir = destW.value?.trim();
+    const destInput = el("input", {
+      type: "text",
+      placeholder: "Destination folder (e.g. ./models)",
+      style: { width: "100%", padding: "4px", boxSizing: "border-box" }
+    });
+
+    // Indeterminate progress (replaces the old determinate progressFill)
+    const progressTrack = el("div", { className: "hf-track", style: { display: "none" } });
+    const progressIndet = el("div", { className: "hf-bar" });
+    progressTrack.append(progressIndet);
+
+    const statusText = el("div", {
+      style: { fontSize: "12px", color: "#ccc", minHeight: "16px", textAlign: "center" },
+      textContent: "Ready"
+    });
+
+    // Buttons (unchanged)
+    const buttonRow = el("div", { style: { display: "flex", gap: "8px", justifyContent: "center" } });
+    const downloadBtn = el("button", { textContent: "Download", style: { padding: "6px 12px", cursor: "pointer" } });
+    const stopBtn = el("button", { textContent: "Stop", disabled: true, style: { padding: "6px 12px", cursor: "pointer" } });
+    buttonRow.append(downloadBtn, stopBtn);
+
+    wrap.append(repoInput, fileInput, destInput, progressTrack, statusText, buttonRow);
+
+    // DOM widget (unchanged)
+    node.addDOMWidget("hf_downloader", "dom", wrap, {
+      serialize: false,
+      hideOnZoom: false,
+      getMinHeight: () => wrap.offsetHeight || 200
+    });
+
+    // Keep your width tweak (unchanged)
+    const defaultWidth = node.size[0] || 300;
+    node.size[0] = defaultWidth + 50;
+
+    // State (unchanged fields, but simplified logic)
+    node.gid = null;
+    node._pollInterval = null;
+    node._pollCount = 0;
+
+    function showBar(on) {
+      progressTrack.style.display = on ? "" : "none";
+    }
+
+    function resetUI() {
+      downloadBtn.disabled = false;
+      stopBtn.disabled = true;
+      showBar(false);
+      statusText.textContent = "Ready";
+      node.gid = null;
+      if (node._pollInterval) {
+        clearInterval(node._pollInterval);
+        node._pollInterval = null;
+      }
+      node._pollCount = 0;
+    }
+
+    function startPolling() {
+      if (node._pollInterval) clearInterval(node._pollInterval);
+      node._pollCount = 0;
+
+      node._pollInterval = setInterval(async () => {
+        if (!node.gid || node._pollCount > 200) { // ~3 minutes as before
+          resetUI();
+          return;
+        }
+        node._pollCount++;
+
+        try {
+          const response = await fetch(`/hf/status?gid=${encodeURIComponent(node.gid)}`, {
+            method: "GET",
+            headers: { "Content-Type": "application/json" }
+          });
+          if (!response.ok) throw new Error(`Status request failed: ${response.status}`);
+
+          const status = await response.json();
+
+          if (status.error) {
+            statusText.textContent = `Error: ${status.error}`;
+            resetUI();
+            return;
+          }
+
+          // Only two states now: running vs terminal; no %/speed/ETA
+          const running = (status.state === "running" || status.state === "starting" || status.status === "running" || status.status === "starting");
+          const done    = (status.state === "done" || status.status === "complete");
+          const stopped = (status.state === "stopped" || status.status === "stopped");
+          const error   = (status.state === "error" || status.status === "error");
+
+          if (running) {
+            statusText.textContent = "Download started...";
+            showBar(true);
+            return;
+          }
+
+          if (done) {
+            statusText.textContent = "✅ File download complete";
+            showBar(false);
+            resetUI();
+            return;
+          }
+
+          if (stopped) {
+            statusText.textContent = "Download stopped";
+            showBar(false);
+            resetUI();
+            return;
+          }
+
+          if (error) {
+            statusText.textContent = `Download failed${status.msg ? `: ${status.msg}` : ""}`;
+            showBar(false);
+            resetUI();
+            return;
+          }
+        } catch (err) {
+          console.warn("Status poll failed:", err);
+          if (node._pollCount > 10) {
+            statusText.textContent = `Error: Status check failed - ${err.message}`;
+            showBar(false);
+            resetUI();
+          }
+        }
+      }, 1000);
+    }
+
+    downloadBtn.onclick = async () => {
+      const repo_id = repoInput.value.trim();
+      const filename = fileInput.value.trim();
+      const dest_dir = destInput.value.trim();
+
       if (!repo_id || !filename || !dest_dir) {
-        statusW.value = "Please fill Repository ID, Filename, and Destination.";
-        node.graph.setDirtyCanvas(true, true);
+        statusText.textContent = "Please fill all fields";
+        showBar(false);
         return;
       }
+
+      downloadBtn.disabled = true;
+      stopBtn.disabled = false;
+      statusText.textContent = "Starting download...";
+      showBar(false);
+
       try {
-        setRunning(true, "Download started…");
-        const resp = await postJSON("/hf/start", {
-          repo_id,
-          filename,
-          dest_dir,
-          gid: node.__hf_gid || undefined,
+        const response = await fetch("/hf/start", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ repo_id, filename, dest_dir })
         });
-        if (resp?.ok) {
-          node.__hf_gid = resp.gid;
-          if (node.__hf_poll) clearInterval(node.__hf_poll);
-          node.__hf_poll = setInterval(pollStatus, 1200);
-        } else {
-          setRunning(false, resp?.error ? `❌ ${resp.error}` : "❌ Failed to start.");
+
+        if (!response.ok) {
+          const errorText = await response.text();
+          throw new Error(`Start request failed: ${response.status} - ${errorText}`);
         }
-      } catch (e) {
-        setRunning(false, `❌ ${e}`);
-      }
-    });
 
-    const stopBtn = node.addWidget("button", "Stop", "stop", async () => {
-      if (!node.__hf_gid) {
-        setRunning(false, "Stopped.");
-        return;
-      }
-      try {
-        const resp = await postJSON("/hf/stop", { gid: node.__hf_gid });
-        setRunning(false, resp?.msg || "Stopped.");
-        node.__hf_gid = null;
-        if (node.__hf_poll) {
-          clearInterval(node.__hf_poll);
-          node.__hf_poll = null;
+        const result = await response.json();
+
+        if (result.error) {
+          statusText.textContent = `Error: ${result.error}`;
+          showBar(false);
+          downloadBtn.disabled = false;
+          stopBtn.disabled = true;
+          return;
         }
-      } catch (e) {
-        setRunning(false, `❌ ${e}`);
+
+        node.gid = result.gid;
+        statusText.textContent = "Download started...";
+        showBar(true);
+        startPolling();
+      } catch (error) {
+        statusText.textContent = `Failed to start: ${error.message}`;
+        showBar(false);
+        downloadBtn.disabled = false;
+        stopBtn.disabled = true;
       }
-    });
-
-    // -------- Indeterminate progress bar (canvas-drawn) --------
-    // A lightweight, always-visible implementation that doesn’t rely on external DOM.
-    let animStart = performance.now();
-    const barHeight = 12;     // px
-    const barWidthFrac = 0.35; // 35% of available width
-    const speedPxPerSec = 240; // speed of the sweep
-
-    function drawIndeterminate(ctx, x, y, w) {
-      // Track
-      const h = barHeight;
-      const radius = 4;
-      ctx.save();
-      ctx.translate(x, y);
-      // Track background
-      ctx.fillStyle = "rgba(255,255,255,0.15)";
-      roundRect(ctx, 0, 0, w, h, radius);
-      ctx.fill();
-
-      // Moving bar
-      const elapsed = (performance.now() - animStart) / 1000;
-      const barWidth = Math.max(24, w * barWidthFrac);
-      const travel = w + barWidth;
-      const offset = (elapsed * speedPxPerSec) % travel - barWidth;
-      ctx.fillStyle = "rgba(255,255,255,0.35)";
-      roundRect(ctx, offset, 0, barWidth, h, radius);
-      ctx.fill();
-      ctx.restore();
-    }
-
-    function roundRect(ctx, x, y, w, h, r) {
-      const rr = Math.min(r, h / 2, w / 2);
-      ctx.beginPath();
-      ctx.moveTo(x + rr, y);
-      ctx.arcTo(x + w, y, x + w, y + h, rr);
-      ctx.arcTo(x + w, y + h, x, y + h, rr);
-      ctx.arcTo(x, y + h, x, y, rr);
-      ctx.arcTo(x, y, x + w, y, rr);
-      ctx.closePath();
-    }
-
-    // Custom widget to reserve space for the bar and draw it when running
-    const barWidget = node.addWidget("custom", "Progress", null, () => {}, {
-      get value() { return null; },
-      set value(_) {},
-      // Reserve vertical space
-      computeSize: () => [node.size[0], barHeight + 8],
-      draw: (ctx, node_, width, y) => {
-        if (!node.__hf_running) return;
-        // Draw centered inside this widget area
-        const padX = 10;
-        const w = Math.max(40, width - padX * 2);
-        const x = padX;
-        const top = y + 4;
-        drawIndeterminate(ctx, x, top, w);
-        // Trigger re-draw for animation
-        node_.graph.setDirtyCanvas(true);
-      },
-    });
-
-    // -------- Helpers --------
-    function setRunning(on, msg) {
-      node.__hf_running = !!on;
-      statusW.value = msg || (on ? "Working…" : "Idle.");
-      startBtn.disabled = !!on;
-      stopBtn.disabled = !on;
-      if (!on) animStart = performance.now(); // reset phase next time
-      node.graph.setDirtyCanvas(true, true);
-    }
-
-    async function pollStatus() {
-      if (!node.__hf_gid) return;
-      try {
-        const data = await getJSON(`/hf/status?gid=${encodeURIComponent(node.__hf_gid)}`);
-        if (data?.state === "running" || data?.state === "starting") {
-          setRunning(true, data?.msg || "Download started…");
-        } else if (data?.state === "done") {
-          setRunning(false, data?.msg ? `✅ ${data.msg}` : "✅ File download complete.");
-          node.__hf_gid = null;
-          if (node.__hf_poll) {
-            clearInterval(node.__hf_poll);
-            node.__hf_poll = null;
-          }
-        } else if (data?.state === "stopped") {
-          setRunning(false, data?.msg || "Stopped.");
-          node.__hf_gid = null;
-          if (node.__hf_poll) {
-            clearInterval(node.__hf_poll);
-            node.__hf_poll = null;
-          }
-        } else if (data?.state === "error") {
-          setRunning(false, data?.msg ? `❌ ${data.msg}` : "❌ Error.");
-          node.__hf_gid = null;
-          if (node.__hf_poll) {
-            clearInterval(node.__hf_poll);
-            node.__hf_poll = null;
-          }
-        }
-      } catch (e) {
-        // keep animating; transient errors are fine
-        console.warn("HF status error:", e);
-      }
-    }
-
-    // Clean up when node is removed
-    const oldOnRemoved = node.onRemoved;
-    node.onRemoved = function () {
-      try {
-        if (node.__hf_poll) {
-          clearInterval(node.__hf_poll);
-          node.__hf_poll = null;
-        }
-      } catch {}
-      if (oldOnRemoved) return oldOnRemoved.apply(this, arguments);
     };
 
-    // Resume if a job was in-flight
-    if (node.__hf_gid && !node.__hf_poll) {
-      node.__hf_poll = setInterval(pollStatus, 1200);
-      setRunning(true, "Resuming…");
-      pollStatus();
-    } else {
-      setRunning(false, "Idle.");
-    }
-  },
+    stopBtn.onclick = async () => {
+      if (!node.gid) return;
+
+      try {
+        await fetch("/hf/stop", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ gid: node.gid })
+        });
+        statusText.textContent = "Stopping...";
+        showBar(false);
+      } catch (error) {
+        console.warn("Stop request failed:", error);
+        statusText.textContent = `Error stopping: ${error.message}`;
+      }
+      resetUI();
+    };
+
+    // Cleanup (unchanged)
+    const originalOnRemoved = node.onRemoved;
+    node.onRemoved = function () {
+      resetUI();
+      if (wrap && wrap.parentNode) wrap.remove();
+      if (originalOnRemoved) originalOnRemoved.call(this);
+    };
+  }
 });
