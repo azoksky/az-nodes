@@ -122,16 +122,21 @@ def _extract_query_filename(u: str) -> str | None:
     except Exception:
         pass
     return None
-
+def _auth_header():
+    return {"Authorization": f"Bearer {HF_TOKEN}"} if HF_TOKEN else {}
+    
 def _head_follow(url: str, max_redirects: int = 5):
     """HEAD first; if disallowed, try GET without reading body."""
     opener = urllib.request.build_opener()
-    req = urllib.request.Request(url, method="HEAD")
+    headers = _auth_header()
+    # HEAD
+    req = urllib.request.Request(url, method="HEAD", headers=headers)
     try:
         return opener.open(req, timeout=10)
     except urllib.error.HTTPError as e:
         if e.code in (403, 405):
-            req_get = urllib.request.Request(url, method="GET")
+            # fallback GET (still needs auth if private)
+            req_get = urllib.request.Request(url, method="GET", headers=headers)
             return opener.open(req_get, timeout=10)
         raise
 
@@ -311,5 +316,6 @@ class Aria2Downloader:
 
     def noop(self):
         return ()
+
 
 
