@@ -68,7 +68,6 @@ app.registerExtension({
       placeholder: "Repository ID (e.g. runwayml/stable-diffusion-v1-5)",
       style: { width: "100%", padding: "4px", boxSizing: "border-box" }
     });
-    
 
     const fileInput = el("input", {
       type: "text",
@@ -88,9 +87,10 @@ app.registerExtension({
       style: { width: "100%", padding: "4px", boxSizing: "border-box" }
     });
 
-    // (unchanged) dropdown INSIDE wrap, between input and progress bar
+    // === Dropdown overlay anchored to destInput (append to body, not inside wrap) ===
     const dropdown = el("div", {
       style: {
+        position: "fixed",
         background: "#222",
         border: "1px solid #555",
         display: "none",
@@ -99,11 +99,22 @@ app.registerExtension({
         fontSize: "12px",
         borderRadius: "6px",
         boxShadow: "0 8px 16px rgba(0,0,0,.35)",
-        marginTop: "2px",
-        width: "100%"
+        zIndex: "999999",
+        minWidth: "180px"
       }
     });
-    wrap.append(repoInput, tokenInput, fileInput, destInput, dropdown);
+    document.body.appendChild(dropdown);
+
+    // helper to place overlay under the input
+    const placeDropdown = () => {
+      const r = destInput.getBoundingClientRect();
+      dropdown.style.left = `${r.left}px`;
+      dropdown.style.top  = `${r.bottom + 2}px`;
+      dropdown.style.width = `${r.width}px`;
+    };
+
+    // Append inputs (do NOT append dropdown here; it's body-level)
+    wrap.append(repoInput, tokenInput, fileInput, destInput);
 
     // Indeterminate progress bar
     const progressTrack = el("div", { className: "hf-track", style: { display: "none" } });
@@ -126,33 +137,11 @@ app.registerExtension({
     let items = [];
     let active = -1;
     let debounceTimer = null;
-
-    // NEW (minimal): keep row refs to highlight + autoscroll; no re-renders needed
-    let rowEls = [];
-
     const normalizePath = (p) => (p || "").replace(/\\/g, "/").replace(/\/{2,}/g, "/");
     const joinPath = (a, b) => normalizePath((a?.endsWith("/") ? a : a + "/") + (b || ""));
 
-    // NEW: in-place highlight + ensure active row is visible
-    const highlightActiveRow = () => {
-      rowEls.forEach((row, i) => {
-        row.style.background = i === active ? "#444" : "transparent";
-      });
-    };
-    const scrollActiveIntoView = () => {
-      if (active < 0 || active >= rowEls.length) return;
-      const row = rowEls[active];
-      const top = row.offsetTop;
-      const bottom = top + row.offsetHeight;
-      const viewTop = dropdown.scrollTop;
-      const viewBottom = viewTop + dropdown.clientHeight;
-      if (top < viewTop) dropdown.scrollTop = top;
-      else if (bottom > viewBottom) dropdown.scrollTop = bottom - dropdown.clientHeight;
-    };
-
     const renderDropdown = () => {
       dropdown.innerHTML = "";
-      rowEls = []; // NEW: reset rows
       if (!items.length) { dropdown.style.display = "none"; active = -1; return; }
 
       items.forEach((it, idx) => {
@@ -166,27 +155,24 @@ app.registerExtension({
           userSelect: "none"
         });
 
-        // change active on hover without re-render
-        row.onmouseenter = () => { active = idx; highlightActiveRow(); };
-
+        row.onmouseenter = () => { active = idx; renderDropdown(); };
         const choose = () => {
           const chosen = normalizePath(it.path);
           destInput.value = chosen;
           node.properties.dest_dir = chosen;
           items = []; active = -1;
           dropdown.style.display = "none";
-          scheduleFetch();
+          scheduleFetch(); // show next level immediately
         };
-        // use pointerdown so it fires before blur; also prevent default
-        row.addEventListener("pointerdown", (e)=>{ e.preventDefault(); choose(); });
-        row.addEventListener("mousedown",   (e)=>{ e.preventDefault(); choose(); });
+        // fire before blur; keep focus
+        row.addEventListener("pointerdown", (e)=>{ e.preventDefault(); e.stopPropagation(); choose(); });
+        row.addEventListener("mousedown",   (e)=>{ e.preventDefault(); e.stopPropagation(); choose(); });
 
         dropdown.appendChild(row);
-        rowEls.push(row); // NEW
       });
 
+      placeDropdown();                 // anchor to input
       dropdown.style.display = "block";
-      scrollActiveIntoView(); // NEW: ensure first active is visible
     };
 
     const scheduleFetch = () => {
@@ -217,8 +203,8 @@ app.registerExtension({
       }
     }
 
-    // Replace "\" -> "/" as you type, maintain caret, and fetch
-    destInput.addEventListener("input", ()=>{
+    // typing
+    destInput.addEventListener("input", () => {
       const raw = destInput.value;
       const prevStart = destInput.selectionStart;
       const normalized = normalizePath(raw);
@@ -229,66 +215,40 @@ app.registerExtension({
         destInput.setSelectionRange(pos, pos);
       }
       node.properties.dest_dir = normalized;
+      placeDropdown();
       scheduleFetch();
     });
 
-    destInput.addEventListener("focus", ()=>{ scheduleFetch(); });
+    destInput.addEventListener("focus", () => { placeDropdown(); scheduleFetch(); });
 
-    // keyboard navigation (NEW: highlight + autoscroll)
-    destInput.addEventListener("keydown", (e)=>{
+    // keyboard nav
+    destInput.addEventListener("keydown", (e) => {
       if (dropdown.style.display !== "block" || !items.length) return;
-      if (e.key === "ArrowDown") {
+      if (e.key === "ArrowDown") { e.preventDefault(); active = (active+1) % items.length; renderDropdown(); }
+      else if (e.key === "ArrowUp") { e.preventDefault(); active = (active-1+items.length) % items.length; renderDropdown(); }
+      else if (e.key === "Enter" && active >= 0) {
         e.preventDefault();
-        active = (active+1) % items.length;
-        highlightActiveRow();
-        scrollActiveIntoView();
-      }
-      else if (e.key === "ArrowUp") {
-        e.preventDefault();
-        active = (active-1+items.length) % items.length;
-        highlightActiveRow();
-        scrollActiveIntoView();
-      }
-      else if (e.key === "Enter") {
-        if (active >= 0) {
-          e.preventDefault();
-          const it = items[active];
-          const chosen = normalizePath(it.path);
-          destInput.value = chosen;
-          node.properties.dest_dir = chosen;
-          items = []; active = -1; dropdown.style.display="none";
-          scheduleFetch();
-        }
+        const it = items[active];
+        destInput.value = normalizePath(it.path);
+        node.properties.dest_dir = destInput.value;
+        items = []; active = -1; dropdown.style.display = "none";
+        scheduleFetch();
       } else if (e.key === "Escape") {
-        dropdown.style.display="none"; items=[]; active=-1;
+        dropdown.style.display = "none"; items=[]; active=-1;
       }
     });
 
-    // --- FEEL-BLE FOCUS FIXES (minimal) ---
+    // hide shortly after blur so clicks register
+    const hideDropdownSoon = () => setTimeout(()=> { dropdown.style.display = "none"; }, 120);
+    destInput.addEventListener("blur", hideDropdownSoon);
 
-    // (CHANGED) Do NOT auto-hide on scroll/resize — remove the old hide handlers
-    // Instead, we just keep the dropdown as-is; since it's inside wrap it doesn't need repositioning.
+    // keep overlay sane on viewport changes
+    const onScroll = () => hideDropdownSoon();
+    const onResize = () => hideDropdownSoon();
+    window.addEventListener("scroll", onScroll, true);
+    window.addEventListener("resize", onResize);
 
-    // Keep it open when clicking/scrolling inside it (prevent blur from hiding)
-    let pointerDownInDropdown = false;
-    dropdown.addEventListener("pointerdown", () => { pointerDownInDropdown = true; });
-    document.addEventListener("pointerup", () => { pointerDownInDropdown = false; });
-
-    const hideDropdownSoon = () => { setTimeout(()=>{ dropdown.style.display="none"; }, 120); };
-
-    // (CHANGED) Blur only hides when pointer is NOT interacting with dropdown
-    destInput.addEventListener("blur", () => {
-      if (pointerDownInDropdown) {
-        // Immediately refocus so dropdown stays usable
-        destInput.focus({ preventScroll: true });
-      } else {
-        hideDropdownSoon();
-      }
-    });
-
-    // NOTE: removed previous window scroll/resize listeners that called hideDropdownSoon()
-
-    // Add DOM widget with fixed min height
+    // Add DOM widget with fixed min height (unchanged)
     const MIN_W = 460;
     const MIN_H = 230;
     node.addDOMWidget("hf_downloader", "dom", wrap, {
@@ -297,7 +257,7 @@ app.registerExtension({
       getMinHeight: () => MIN_H
     });
 
-    // ====== Size fixes ======
+    // ====== Size fixes (unchanged except original logic) ======
     const MAX_H = 300;
     node.size = [
       Math.max(node.size?.[0] || MIN_W, MIN_W),
@@ -404,7 +364,7 @@ app.registerExtension({
         const res = await fetch("/hf/start", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ repo_id, filename, dest_dir, token_input,})
+          body: JSON.stringify({ repo_id, filename, dest_dir, token_input, })
         });
         if (!res.ok) throw new Error(`Start ${res.status}`);
         const out = await res.json();
@@ -442,11 +402,18 @@ app.registerExtension({
     node.size[0] = Math.max(node.size[0], MIN_W);
     resetToIdle("Ready");
 
-    // Cleanup (unchanged)
+    // Cleanup
     const originalOnRemoved = node.onRemoved;
     node.onRemoved = function () {
-      // no global listeners to remove now (we removed the old scroll/resize hide)
+      // existing cleanup
+      stopPolling();
       if (wrap && wrap.parentNode) wrap.remove();
+
+      // new: remove listeners and the body overlay
+      window.removeEventListener("scroll", onScroll, true);
+      window.removeEventListener("resize", onResize);
+      try { dropdown.remove(); } catch {}
+
       if (originalOnRemoved) originalOnRemoved.call(this);
     };
   }
