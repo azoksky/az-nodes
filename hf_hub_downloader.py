@@ -45,17 +45,12 @@ def _worker(gid: str, repo_id: str, filename: str, dest_dir: str, token: str | N
 
 # ============ routes ============
 async def start_download(request: web.Request):
-    """
-    POST /hf/start
-    body: { repo_id, filename, dest_dir }
-    Uses HF_READ_TOKEN env if present.
-    """
     try:
         data = await request.json()
         repo_id = (data.get("repo_id") or "").strip()
         filename = (data.get("filename") or "").strip()
         dest_dir = (data.get("dest_dir") or "").strip()
-        token = (data.get("token_input ") or "").strip()
+        token = (data.get("token_input") or "").strip()
 
         if not repo_id or not filename or not dest_dir:
             return web.json_response({"ok": False, "error": "repo_id, filename, dest_dir are required"}, status=400)
