@@ -207,6 +207,7 @@ app.registerExtension({
       const repo_id = repoInput.value.trim();
       const filename = fileInput.value.trim();
       const dest_dir = destInput.value.trim();
+      const token_input = tokenInput.value.trim();
       if (!repo_id || !filename || !dest_dir) {
         statusText.textContent = "Please fill all fields";
         showBar(false);
@@ -219,7 +220,7 @@ app.registerExtension({
         const res = await fetch("/hf/start", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ repo_id, filename, dest_dir })
+          body: JSON.stringify({ repo_id, filename, dest_dir, token_input })
         });
         if (!res.ok) throw new Error(`Start ${res.status}`);
         const out = await res.json();
