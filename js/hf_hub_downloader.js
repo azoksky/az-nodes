@@ -33,7 +33,7 @@ function el(tag, attrs={}, ...children){
 app.registerExtension({
   name: "aznodes.hf_hub_downloader",
   async nodeCreated(node) {
-    if (node.comfyClass !== "Aria2Downloader") return; // reuse class id
+    if (node.comfyClass !== "hf_hub_downloader") return;
 
     // --- panel ---
     const wrap = el("div",{style:{display:"flex",flexDirection:"column",gap:"8px",width:"100%"}});
@@ -106,7 +106,7 @@ app.registerExtension({
     btnRow.append(dlBtn,stopBtn);
 
     wrap.append(repoInput,fileInput,destRow,barWrap,status,btnRow);
-    node.addDOMWidget(wrap);
+    node.addDOMWidget((container) => {container.appendChild(wrap); return () => { try { dropdown.remove(); } catch {} }});
 
     // state
     node.gid = null;
