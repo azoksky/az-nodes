@@ -9,7 +9,6 @@ import urllib.parse
 from urllib.parse import urlparse, urlunparse
 from uuid import uuid4
 from subprocess import Popen, DEVNULL
-import pathlib  # <— added
 
 from aiohttp import web
 from server import PromptServer
@@ -171,63 +170,6 @@ def _eta(total_len, done_len, speed):
     except Exception:
         return None
 
-# ========= Suggest (mirror of /az/listdir) =========
-def _listdir(path: str):
-    """
-    Return (folders, files) for a directory, sorted. Mirrors path_uploader.py.
-    """
-    p = pathlib.Path(_safe_expand(path))
-    if not p.exists():
-        raise FileNotFoundError("Path does not exist")
-    if not p.is_dir():
-        raise NotADirectoryError("Not a directory")
-    folders, files = [], []
-    for entry in p.iterdir():
-        try:
-            if entry.is_dir():
-                folders.append(entry.name)
-            else:
-                files.append(entry.name)
-        except PermissionError:
-            continue
-    folders.sort()
-    files.sort()
-    return folders, files
-
-@PromptServer.instance.routes.get("/aria2/suggest")
-async def aria2_suggest(request: web.Request):
-    """
-    Query: ?path=<path>
-    Response shape matches /az/listdir from PathUploader.
-    """
-    qpath = request.query.get("path", "") or ""
-    # Windows nicety: treat "C:" like "C:\"
-    if len(qpath) == 2 and qpath[1] == ":" and qpath[0].isalpha():
-        qpath = qpath + os.sep
-    try:
-        abs_root = _safe_expand(qpath)
-        sep = os.sep
-        folders, files = _listdir(abs_root)
-
-        def make_entries(names):
-            return [{"name": n, "path": os.path.join(abs_root, n)} for n in names]
-
-        return web.json_response({
-            "ok": True,
-            "root": abs_root,
-            "sep": sep,
-            "folders": make_entries(folders),
-            "files": make_entries(files),
-        })
-    except Exception as e:
-        return web.json_response({
-            "ok": False,
-            "error": str(e),
-            "root": _safe_expand(qpath),
-            "folders": [],
-            "files": [],
-        }, status=200)
-
 # ========= API =========
 @PromptServer.instance.routes.post("/aria2/start")
 async def aria2_start(request):
@@ -253,7 +195,8 @@ async def aria2_start(request):
 
     guessed_name, confident = _smart_guess_filename(url)
 
-    # Map CLI options and add browser-like headers
+    # Map CLI options and add browser-like headers to coax proper CD filename
+    # NOTE: we set "out" ONLY if confident; otherwise we let aria2 use server-provided name.
     opts = {
         "continue": "true",
         "max-connection-per-server": "16",
@@ -265,13 +208,16 @@ async def aria2_start(request):
         "header": [
             "Accept: */*",
             "Accept-Language: en-US,en;q=0.9",
-            "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+            "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
         ],
         "max-tries": "5",
     }
+    # Add Referer to mimic browser navigation when possible
     origin = _origin_from_url(url)
     if origin:
         opts["referer"] = origin
+
     if confident and guessed_name:
         opts["out"] = guessed_name
 
