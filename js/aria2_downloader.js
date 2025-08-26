@@ -203,6 +203,19 @@ app.registerExtension({
       const urlWidget = this.addDOMWidget("url", "URL", urlInput);
       urlWidget.computeSize = () => [this.size[0] - 20, 34];
 
+      const tokenInput = document.createElement("input");
+      tokenInput.type = "text";
+      tokenInput.placeholder = "SECRET TOKEN";
+      Object.assign(tokenInput.style, {
+        width:"100%", height:"26px", padding:"2px 8px",
+        border:"1px solid #444", borderRadius:"6px",
+        background:"var(--comfy-input-bg, #2a2a2a)", color:"#ddd",
+        boxSizing:"border-box", outline:"none"
+          });
+      tokenInput.value = this.properties.url || "";  // optional prefill
+      const tokenInputWidget = this.addDOMWidget("url", "URL", urlInput);
+      tokenInputWidget.computeSize = () => [this.size[0] - 20, 34];
+
       // --- State for progress view ---
       this.gid = null;
       this._status = "Idle";
@@ -368,5 +381,6 @@ app.registerExtension({
     };
   },
 });
+
 
 
