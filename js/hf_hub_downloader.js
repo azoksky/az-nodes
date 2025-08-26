@@ -137,11 +137,31 @@ app.registerExtension({
     let items = [];
     let active = -1;
     let debounceTimer = null;
+    let rowEls = []; // keep DOM refs to rows for highlight/scroll
+
     const normalizePath = (p) => (p || "").replace(/\\/g, "/").replace(/\/{2,}/g, "/");
     const joinPath = (a, b) => normalizePath((a?.endsWith("/") ? a : a + "/") + (b || ""));
 
+    const highlightActiveRow = () => {
+      rowEls.forEach((row, i) => {
+        row.style.background = i === active ? "#444" : "transparent";
+      });
+    };
+
+    const scrollActiveIntoView = () => {
+      if (active < 0 || active >= rowEls.length) return;
+      const row = rowEls[active];
+      const top = row.offsetTop;
+      const bottom = top + row.offsetHeight;
+      const viewTop = dropdown.scrollTop;
+      const viewBottom = viewTop + dropdown.clientHeight;
+      if (top < viewTop) dropdown.scrollTop = top;
+      else if (bottom > viewBottom) dropdown.scrollTop = bottom - dropdown.clientHeight;
+    };
+
     const renderDropdown = () => {
       dropdown.innerHTML = "";
+      rowEls = [];
       if (!items.length) { dropdown.style.display = "none"; active = -1; return; }
 
       items.forEach((it, idx) => {
@@ -155,7 +175,9 @@ app.registerExtension({
           userSelect: "none"
         });
 
-        row.onmouseenter = () => { active = idx; renderDropdown(); };
+        // Smooth hover without full re-render
+        row.onmouseenter = () => { active = idx; highlightActiveRow(); };
+
         const choose = () => {
           const chosen = normalizePath(it.path);
           destInput.value = chosen;
@@ -169,10 +191,12 @@ app.registerExtension({
         row.addEventListener("mousedown",   (e)=>{ e.preventDefault(); e.stopPropagation(); choose(); });
 
         dropdown.appendChild(row);
+        rowEls.push(row);
       });
 
       placeDropdown();                 // anchor to input
       dropdown.style.display = "block";
+      scrollActiveIntoView();
     };
 
     const scheduleFetch = () => {
@@ -221,16 +245,25 @@ app.registerExtension({
 
     destInput.addEventListener("focus", () => { placeDropdown(); scheduleFetch(); });
 
-    // keyboard nav
+    // keyboard nav with auto-scroll
     destInput.addEventListener("keydown", (e) => {
       if (dropdown.style.display !== "block" || !items.length) return;
-      if (e.key === "ArrowDown") { e.preventDefault(); active = (active+1) % items.length; renderDropdown(); }
-      else if (e.key === "ArrowUp") { e.preventDefault(); active = (active-1+items.length) % items.length; renderDropdown(); }
-      else if (e.key === "Enter" && active >= 0) {
+      if (e.key === "ArrowDown") {
+        e.preventDefault();
+        active = (active + 1) % items.length;
+        highlightActiveRow();
+        scrollActiveIntoView();
+      } else if (e.key === "ArrowUp") {
+        e.preventDefault();
+        active = (active - 1 + items.length) % items.length;
+        highlightActiveRow();
+        scrollActiveIntoView();
+      } else if (e.key === "Enter" && active >= 0) {
         e.preventDefault();
         const it = items[active];
-        destInput.value = normalizePath(it.path);
-        node.properties.dest_dir = destInput.value;
+        const chosen = normalizePath(it.path);
+        destInput.value = chosen;
+        node.properties.dest_dir = chosen;
         items = []; active = -1; dropdown.style.display = "none";
         scheduleFetch();
       } else if (e.key === "Escape") {
@@ -238,15 +271,32 @@ app.registerExtension({
       }
     });
 
-    // hide shortly after blur so clicks register
-    const hideDropdownSoon = () => setTimeout(()=> { dropdown.style.display = "none"; }, 120);
-    destInput.addEventListener("blur", hideDropdownSoon);
-
-    // keep overlay sane on viewport changes
-    const onScroll = () => hideDropdownSoon();
-    const onResize = () => hideDropdownSoon();
+    // Keep overlay aligned while the page/canvas scrolls; do NOT hide
+    const onScroll = () => {
+      if (dropdown.style.display === "block" && document.body.contains(destInput)) {
+        placeDropdown();
+      }
+    };
+    const onResize = () => {
+      if (dropdown.style.display === "block") placeDropdown();
+    };
     window.addEventListener("scroll", onScroll, true);
     window.addEventListener("resize", onResize);
+
+    // Prevent blur-hiding when clicking/scrolling inside dropdown
+    let pointerDownInDropdown = false;
+    dropdown.addEventListener("pointerdown", () => { pointerDownInDropdown = true; });
+    document.addEventListener("pointerup", () => { pointerDownInDropdown = false; });
+
+    const hideDropdownSoon = () => setTimeout(() => { dropdown.style.display = "none"; }, 120);
+    destInput.addEventListener("blur", () => {
+      if (pointerDownInDropdown) {
+        destInput.focus({ preventScroll: true });
+        placeDropdown();
+      } else {
+        hideDropdownSoon();
+      }
+    });
 
     // Add DOM widget with fixed min height (unchanged)
     const MIN_W = 460;
@@ -257,7 +307,7 @@ app.registerExtension({
       getMinHeight: () => MIN_H
     });
 
-    // ====== Size fixes (unchanged except original logic) ======
+    // ====== Size fixes (unchanged) ======
     const MAX_H = 300;
     node.size = [
       Math.max(node.size?.[0] || MIN_W, MIN_W),
@@ -347,12 +397,22 @@ app.registerExtension({
     }
 
     // ====== Buttons ======
-    downloadBtn.onclick = async () => {
+    const bodyForStart = () => {
+      // keep payload fields the same names you already use
       const repo_id = repoInput.value.trim();
       const filename = fileInput.value.trim();
       const dest_dir = destInput.value.trim();
       const token_input = tokenInput.value.trim();
-      if (!repo_id || !filename || !dest_dir) {
+      return { repo_id, filename, dest_dir, token_input };
+    };
+
+    const validateStart = () => {
+      const { repo_id, filename, dest_dir } = bodyForStart();
+      return !!(repo_id && filename && dest_dir);
+    };
+
+    downloadBtn.onclick = async () => {
+      if (!validateStart()) {
         statusText.textContent = "Please fill all fields";
         showBar(false);
         return;
@@ -364,7 +424,7 @@ app.registerExtension({
         const res = await fetch("/hf/start", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ repo_id, filename, dest_dir, token_input, })
+          body: JSON.stringify(bodyForStart())
         });
         if (!res.ok) throw new Error(`Start ${res.status}`);
         const out = await res.json();
@@ -399,6 +459,7 @@ app.registerExtension({
     };
 
     // ====== Init ======
+    const MIN_W = 460; // keep consistent with size logic
     node.size[0] = Math.max(node.size[0], MIN_W);
     resetToIdle("Ready");
 
