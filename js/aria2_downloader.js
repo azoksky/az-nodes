@@ -2,6 +2,7 @@
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
 
+/** ---------- small helpers ---------- */
 function fmtBytes(b) {
   if (!b || b <= 0) return "0 B";
   const u = ["B","KB","MB","GB","TB"];
@@ -15,7 +16,16 @@ function fmtETA(s) {
   if (m) return `${m}m ${sec}s`;
   return `${sec}s`;
 }
+const normalizePath = (p) => (p || "").replace(/\\/g, "/").replace(/\/{2,}/g, "/");
+function joinPath(base, seg) {
+  base = normalizePath(base || "");
+  seg  = normalizePath(seg || "");
+  if (!base) return seg;
+  if (!seg) return base;
+  return (base.endsWith("/") ? base : base + "/") + seg;
+}
 
+/** ---------- extension ---------- */
 app.registerExtension({
   name: "comfyui.aria2.downloader",
   beforeRegisterNodeDef(nodeType, nodeData) {
@@ -27,9 +37,10 @@ app.registerExtension({
 
       this.properties = this.properties || {};
       this.properties.url = this.properties.url || "";
-      this.properties.dest_dir = this.properties.dest_dir || "";
+      this.properties.dest_dir = normalizePath(this.properties.dest_dir || "");
       this.serialize_widgets = true;
 
+      // --- Destination input with dropdown (portaled to body) ---
       const container = document.createElement("div");
       Object.assign(container.style,{ position:"relative", width:"100%" });
 
@@ -42,21 +53,33 @@ app.registerExtension({
         background:"var(--comfy-input-bg, #2a2a2a)", color:"#ddd",
         boxSizing:"border-box", outline:"none"
       });
+      destInput.value = this.properties.dest_dir;
+
+      // PORTAL: dropdown in document.body to avoid canvas clipping
       const dropdown = document.createElement("div");
       Object.assign(dropdown.style,{
-        position:"absolute", top:"100%", left:"0", right:"0",
+        position:"fixed",
         background:"#222", border:"1px solid #555",
-        zIndex:"9999", display:"none", maxHeight:"180px",
-        overflowY:"auto", fontSize:"12px", borderRadius:"6px"
+        zIndex:"999999", display:"none", maxHeight:"200px",
+        overflowY:"auto", fontSize:"12px", borderRadius:"6px",
+        minWidth:"180px", boxShadow:"0 8px 16px rgba(0,0,0,.35)"
       });
-      
+      document.body.appendChild(dropdown);
+
+      const placeDropdown = () => {
+        const r = destInput.getBoundingClientRect();
+        dropdown.style.left = `${r.left}px`;
+        dropdown.style.top  = `${r.bottom + 2}px`;
+        dropdown.style.width = `${r.width}px`;
+      };
+
       container.appendChild(destInput);
-      container.appendChild(dropdown);
       const destWidget = this.addDOMWidget("dest_dir","Destination",container);
-      // compact row
       destWidget.computeSize = () => [this.size[0]-20, 34];
 
-      let items = []; let active = -1; let debounceTimer=null;
+      let items = [];
+      let active = -1;
+      let debounceTimer = null;
 
       const renderDropdown = () => {
         dropdown.innerHTML = "";
@@ -66,35 +89,36 @@ app.registerExtension({
           const row = document.createElement("div");
           row.textContent = it.name;
           Object.assign(row.style,{
-            padding:"5px 8px", cursor:"pointer", whiteSpace:"nowrap",
+            padding:"6px 10px", cursor:"pointer", whiteSpace:"nowrap",
             background: idx===active ? "#444" : "transparent",
             userSelect: "none"
           });
 
-          // Highlight on hover
           row.onmouseenter = ()=>{ active = idx; renderDropdown(); };
 
-          // --- IMPORTANT: choose on pointerdown/mousedown so it fires before blur ---
           const choose = () => {
             const chosen = normalizePath(it.path);
             destInput.value = chosen;
             this.properties.dest_dir = chosen;
             items = []; active = -1;
             dropdown.style.display="none";
-            scheduleFetch(); // load next level
+            scheduleFetch(); // show next level immediately
           };
+
+          // use pointerdown so it fires before blur; also prevent default
           row.addEventListener("pointerdown", (e)=>{ e.preventDefault(); e.stopPropagation(); choose(); });
           row.addEventListener("mousedown",   (e)=>{ e.preventDefault(); e.stopPropagation(); choose(); });
 
           dropdown.appendChild(row);
         });
 
+        placeDropdown();
         dropdown.style.display = "block";
       };
 
       const scheduleFetch = () => {
         if (debounceTimer) clearTimeout(debounceTimer);
-        debounceTimer = setTimeout(fetchChildren, 200);
+        debounceTimer = setTimeout(fetchChildren, 180);
       };
 
       const fetchChildren = async () => {
@@ -104,33 +128,38 @@ app.registerExtension({
         try{
           const resp = await api.fetchApi(`/az/listdir?path=${encodeURIComponent(val)}`);
           const data = await resp.json();
-          if (data?.ok && data.folders) {
-            items = data.folders.map(f=>({
+          if (data?.ok && Array.isArray(data.folders)) {
+            items = data.folders.map(f => ({
               name: f.name,
               path: joinPath(data.root || val, f.name)
             }));
-          } else { items = []; }
+          } else {
+            items = [];
+          }
           active = items.length ? 0 : -1;
           renderDropdown();
-        }catch{ items = []; renderDropdown(); }
+        } catch {
+          items = []; renderDropdown();
+        }
       };
 
-      // Normalize "\" to "/" as you type, without jumping the caret
+      // Replace "\" -> "/" as you type, maintain caret, and fetch
       destInput.addEventListener("input", ()=>{
-        const prevStart = destInput.selectionStart, prevEnd = destInput.selectionEnd;
-        const normalized = normalizePath(destInput.value);
-        if (normalized !== destInput.value) {
+        const raw = destInput.value;
+        const prevStart = destInput.selectionStart;
+        const normalized = normalizePath(raw);
+        if (normalized !== raw) {
+          const delta = normalized.length - raw.length;
           destInput.value = normalized;
-          // best-effort caret restore
-          const delta = normalized.length - (destInput.value.length); // 0 because we reassigned
-          const pos = Math.max(0, (prevStart||0) + (delta||0));
+          const pos = Math.max(0, (prevStart||0) + delta);
           destInput.setSelectionRange(pos, pos);
         }
         this.properties.dest_dir = normalized;
+        placeDropdown();
         scheduleFetch();
       });
 
-      destInput.addEventListener("focus", ()=>{ scheduleFetch(); });
+      destInput.addEventListener("focus", ()=>{ placeDropdown(); scheduleFetch(); });
 
       // keyboard navigation
       destInput.addEventListener("keydown", (e)=>{
@@ -147,18 +176,22 @@ app.registerExtension({
             items = []; active = -1; dropdown.style.display="none";
             scheduleFetch();
           }
-        } else if (e.key === "Escape") { dropdown.style.display="none"; items=[]; active=-1; }
+        } else if (e.key === "Escape") {
+          dropdown.style.display="none"; items=[]; active=-1;
+        }
       });
 
-      // Delay hiding so clicks can register (we also handle on pointerdown)
-      destInput.addEventListener("blur", ()=>{ setTimeout(()=>{ dropdown.style.display="none"; }, 120); });
+      const hideDropdownSoon = () => { setTimeout(()=>{ dropdown.style.display="none"; }, 120); };
+      destInput.addEventListener("blur", hideDropdownSoon);
+      const onScroll = () => hideDropdownSoon();
+      const onResize = () => hideDropdownSoon();
+      window.addEventListener("scroll", onScroll, true);
+      window.addEventListener("resize", onResize);
 
-      
+      // --- Inputs (URL + button) ---
+      this.addWidget("text", "URL", this.properties.url, v => this.properties.url = v ?? "");
 
-      // Inputs
-      this.addWidget("text", "URL", this.properties.url, v => this.properties.url = v ?? "");  //this.addWidget("text", "Destination Folder", this.properties.dest_dir, v => this.properties.dest_dir = v ?? "");
-
-      // State
+      // --- State for progress view ---
       this.gid = null;
       this._status = "Idle";
       this._progress = 0;
@@ -309,14 +342,17 @@ app.registerExtension({
       const oldRemoved = this.onRemoved;
       this.onRemoved = function () {
         if (this._pollTimer) clearTimeout(this._pollTimer);
+        // remove dropdown + listeners
+        if (dropdown && dropdown.parentNode) dropdown.parentNode.removeChild(dropdown);
+        window.removeEventListener("scroll", onScroll, true);
+        window.removeEventListener("resize", onResize);
         if (oldRemoved) oldRemoved.apply(this, arguments);
       };
+
+      // If prefilled, show suggestions right away
+      if (destInput.value) setTimeout(()=>destInput.dispatchEvent(new Event("input")), 50);
 
       return r;
     };
   },
 });
-
-
-
-
