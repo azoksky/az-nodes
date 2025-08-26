@@ -242,11 +242,10 @@ app.registerExtension({
     const hideDropdownSoon = () => setTimeout(()=> { dropdown.style.display = "none"; }, 120);
     destInput.addEventListener("blur", hideDropdownSoon);
 
-    // keep overlay sane on viewport changes
-    // const onScroll = () => hideDropdownSoon();
-    // const onResize = () => hideDropdownSoon();
-    // window.addEventListener("scroll", onScroll, true);
-    // window.addEventListener("resize", onResize);
+    const onScroll = () => {if (dropdown.style.display === "block" && document.body.contains(destInput)) {placeDropdown(); }};
+    const onResize = () => {if (dropdown.style.display === "block") placeDropdown();};
+    window.addEventListener("scroll", onScroll, true);
+    window.addEventListener("resize", onResize);
 
     // Add DOM widget with fixed min height (unchanged)
     const MIN_W = 460;
