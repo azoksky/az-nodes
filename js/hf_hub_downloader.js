@@ -69,15 +69,11 @@ app.registerExtension({
 
     wrap.append(repoInput, fileInput, destInput, progressBar, statusText, buttonRow);
 
-    node.addDOMWidget((container) => {
-      container.appendChild(wrap);
-      return () => {
-        // Simple cleanup
-        if (node._pollInterval) {
-          clearInterval(node._pollInterval);
-          node._pollInterval = null;
-        }
-      };
+    // Add the DOM widget correctly
+    node.addDOMWidget("hf_downloader", "dom", wrap, {
+      serialize: false,
+      hideOnZoom: false, // Optional: Keep visible during zoom
+      getMinHeight: () => wrap.offsetHeight || 200 // Optional: Ensure dynamic height calculation
     });
 
     // State management
@@ -219,10 +215,11 @@ app.registerExtension({
       resetUI();
     };
 
-    // Cleanup on node removal
+    // Cleanup on node removal (clear interval and remove DOM element to prevent leaks)
     const originalOnRemoved = node.onRemoved;
     node.onRemoved = function() {
       resetUI();
+      if (wrap && wrap.parentNode) wrap.remove(); // Explicitly remove the DOM element
       if (originalOnRemoved) originalOnRemoved.call(this);
     };
   }
