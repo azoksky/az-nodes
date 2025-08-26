@@ -1,105 +1,28 @@
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
 
-/** Small helper to simplify element creation */
+function fmtBytes(b) {
+  if (!b || b <= 0) return "0 B";
+  const u = ["B", "KB", "MB", "GB", "TB"];
+  const i = Math.floor(Math.log(b) / Math.log(1024));
+  return (b / Math.pow(1024, i)).toFixed(i ? 1 : 0) + " " + u[i];
+}
+
+function fmtETA(s) {
+  if (!s || s <= 0) return "—";
+  const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), sec = Math.floor(s % 60);
+  if (h) return `${h}h ${m}m ${sec}s`;
+  if (m) return `${m}m ${sec}s`;
+  return `${sec}s`;
+}
+
 function el(tag, attrs = {}, ...children) {
   const n = document.createElement(tag);
-  const { style, dataset, ...rest } = attrs || {};
-  Object.assign(n, rest);
-  if (style) Object.assign(n.style, style);
-  if (dataset) Object.assign(n.dataset, dataset);
-  for (const c of children) {
-    if (c == null) continue;
-    n.append(typeof c === "string" ? document.createTextNode(c) : c);
-  }
+  const { style, ...rest } = attrs || {};
+  if (rest) Object.assign(n, rest);
+  if (style && typeof style === "object") Object.assign(n.style, style);
+  for (const c of children) n.append(c);
   return n;
-}
-
-/** Inject the CSS used by the indeterminate progress bar (only once) */
-(function ensureIndeterminateStyle() {
-  if (document.getElementById("hf-indeterminate-style")) return;
-  const style = document.createElement("style");
-  style.id = "hf-indeterminate-style";
-  style.textContent = `
-@keyframes hfIndeterminate {
-  0%   { transform: translateX(-100%); }
-  50%  { transform: translateX(0%); }
-  100% { transform: translateX(100%); }
-}
-.hf-indeterminate-track {
-  position: relative;
-  height: 10px;
-  background: rgba(255,255,255,0.12);
-  border-radius: 6px;
-  overflow: hidden;
-}
-.hf-indeterminate-bar {
-  position: absolute;
-  inset: 0 auto 0 0;
-  width: 34%;
-  background: rgba(255,255,255,0.35);
-  border-radius: 6px;
-  animation: hfIndeterminate 1.2s linear infinite;
-}
-.hf-status {
-  font-size: 12px;
-  opacity: 0.85;
-}
-.hf-actions {
-  display: flex;
-  gap: 8px;
-  align-items: center;
-  flex-wrap: wrap;
-}
-.hf-row {
-  display: flex;
-  gap: 8px;
-  align-items: center;
-}
-.hf-col {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-.hf-input {
-  width: 100%;
-  padding: 6px 8px;
-  box-sizing: border-box;
-  border-radius: 6px;
-  border: 1px solid rgba(255,255,255,0.15);
-  background: rgba(0,0,0,0.2);
-  color: inherit;
-}
-.hf-btn {
-  padding: 6px 10px;
-  border-radius: 8px;
-  border: 1px solid rgba(255,255,255,0.15);
-  background: rgba(255,255,255,0.06);
-  cursor: pointer;
-}
-.hf-btn:disabled {
-  opacity: 0.55;
-  cursor: not-allowed;
-}
-`;
-  document.head.appendChild(style);
-})();
-
-/** Small API helpers (use ComfyUI’s API wrapper for auth/csrf consistency) */
-async function postJSON(path, body) {
-  const res = await api.fetchApi(path, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body || {}),
-  });
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
-  return await res.json();
-}
-
-async function getJSON(path) {
-  const res = await api.fetchApi(path, { method: "GET" });
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
-  return await res.json();
 }
 
 app.registerExtension({
@@ -107,213 +30,210 @@ app.registerExtension({
   async nodeCreated(node) {
     if (node.comfyClass !== "hf_hub_downloader") return;
 
-    // Keep any previously stored gid across UI refreshes
-    node.__hf_gid = node.__hf_gid || null;
-    node.__hf_poll = node.__hf_poll || null;
+    const wrap = el("div", { style: { display: "flex", flexDirection: "column", gap: "8px", width: "100%", padding: "10px" } });
 
-    // ---- UI: container ----
-    const root = el("div", {
-      className: "hf-col",
-      style: { gap: "10px", width: "100%", padding: "10px" },
-    });
-
-    // ---- Inputs ----
+    // Simple inputs
     const repoInput = el("input", {
-      className: "hf-input",
       type: "text",
       placeholder: "Repository ID (e.g. runwayml/stable-diffusion-v1-5)",
-      value: node.properties?.repo_id || "",
+      style: { width: "100%", padding: "4px", boxSizing: "border-box" }
     });
+
     const fileInput = el("input", {
-      className: "hf-input",
       type: "text",
-      placeholder: "Filename inside repo (e.g. model.safetensors)",
-      value: node.properties?.filename || "",
+      placeholder: "Filename (e.g. v1-5-pruned-emaonly.ckpt)",
+      style: { width: "100%", padding: "4px", boxSizing: "border-box" }
     });
+
     const destInput = el("input", {
-      className: "hf-input",
       type: "text",
       placeholder: "Destination folder (e.g. ./models)",
-      value: node.properties?.dest_dir || "",
+      style: { width: "100%", padding: "4px", boxSizing: "border-box" }
     });
 
-    // Keep node.properties in sync without triggering downloads
-    node.properties = node.properties || {};
-    const syncProps = () => {
-      node.properties.repo_id = repoInput.value ?? "";
-      node.properties.filename = fileInput.value ?? "";
-      node.properties.dest_dir = destInput.value ?? "";
-    };
-    [repoInput, fileInput, destInput].forEach((inp) =>
-      inp.addEventListener("change", syncProps)
-    );
+    // Progress display
+    const progressBar = el("div", { style: { height: "10px", background: "#333", borderRadius: "5px", overflow: "hidden", width: "100%" } });
+    const progressFill = el("div", { style: { height: "100%", width: "0%", background: "#0084ff", transition: "width 0.3s ease" } });
+    progressBar.append(progressFill);
 
-    // ---- Status text ----
-    const statusText = el("div", { className: "hf-status" }, "Idle.");
+    const statusText = el("div", {
+      style: { fontSize: "12px", color: "#ccc", minHeight: "16px", textAlign: "center" },
+      textContent: "Ready"
+    });
 
-    // ---- Indeterminate progress bar (hidden by default) ----
-    const track = el("div", {
-      className: "hf-indeterminate-track",
-      style: { display: "none" }, // hidden until start
-    }, el("div", { className: "hf-indeterminate-bar" }));
+    // Buttons
+    const buttonRow = el("div", { style: { display: "flex", gap: "8px", justifyContent: "center" } });
+    const downloadBtn = el("button", { textContent: "Download", style: { padding: "6px 12px", cursor: "pointer" } });
+    const stopBtn = el("button", { textContent: "Stop", disabled: true, style: { padding: "6px 12px", cursor: "pointer" } });
+    buttonRow.append(downloadBtn, stopBtn);
 
-    // ---- Actions ----
-    const startBtn = el("button", { className: "hf-btn" }, "Download");
-    const stopBtn = el("button", { className: "hf-btn", disabled: true }, "Stop");
+    wrap.append(repoInput, fileInput, destInput, progressBar, statusText, buttonRow);
 
-    // Layout
-    root.append(
-      el("div", { className: "hf-col" },
-        el("label", {}, "Repository ID"),
-        repoInput
-      ),
-      el("div", { className: "hf-col" },
-        el("label", {}, "Filename"),
-        fileInput
-      ),
-      el("div", { className: "hf-col" },
-        el("label", {}, "Destination Folder"),
-        destInput
-      ),
-      el("div", { className: "hf-actions" }, startBtn, stopBtn),
-      statusText,
-      track
-    );
+    // Add DOM widget
+    node.addDOMWidget("hf_downloader", "dom", wrap, {
+      serialize: false,
+      hideOnZoom: false,
+      getMinHeight: () => wrap.offsetHeight || 200
+    });
 
-    // Attach to the node’s DOM
-    // ComfyUI nodes expose a `node.addDOMWidget` in many community nodes; if not present,
-    // we can append to the node’s `widgets_container` safely.
-    const attach = () => {
-      // Prefer the built-in widgets container to avoid covering the canvas.
-      if (node.widgets && node.widgets.length > 0 && node.widgets[0]?.inputEl) {
-        // If a text widget exists, place after it:
-        const parent = node.widgets[0].inputEl.closest(".widget")?.parentElement || node.__uiContainer || node;
-        parent.appendChild(root);
-      } else if (node.__uiContainer) {
-        node.__uiContainer.appendChild(root);
-      } else if (node.el && node.el.content) {
-        node.el.content.appendChild(root);
-      } else if (node.el) {
-        node.el.appendChild(root);
-      } else {
-        // Last resort: attach to document (rare).
-        document.body.appendChild(root);
+    // Increase node width by 50 pixels
+    const defaultWidth = node.size[0] || 300; // Default to 300 if size not set
+    node.size[0] = defaultWidth + 50;
+
+    // State management
+    node.gid = null;
+    node._pollInterval = null;
+    node._pollCount = 0;
+
+    function resetUI() {
+      downloadBtn.disabled = false;
+      stopBtn.disabled = true;
+      progressFill.style.width = "0%";
+      statusText.textContent = "Ready";
+      node.gid = null;
+      if (node._pollInterval) {
+        clearInterval(node._pollInterval);
+        node._pollInterval = null;
       }
-    };
-    attach();
+      node._pollCount = 0;
+    }
 
-    // Cleanup on node removal
-    const oldOnRemoved = node.onRemoved;
-    node.onRemoved = function () {
-      try {
-        if (node.__hf_poll) {
-          clearInterval(node.__hf_poll);
-          node.__hf_poll = null;
+    function startPolling() {
+      if (node._pollInterval) clearInterval(node._pollInterval);
+      node._pollCount = 0;
+
+      node._pollInterval = setInterval(async () => {
+        if (!node.gid || node._pollCount > 200) { // Max 200 polls (~3 minutes)
+          resetUI();
+          return;
         }
-        root.remove();
-      } catch {}
-      if (oldOnRemoved) return oldOnRemoved.apply(this, arguments);
-    };
 
-    // ---- Behavior helpers (no progress math) ----
-    const setBusy = (busy, msg) => {
-      startBtn.disabled = !!busy;
-      stopBtn.disabled = !busy;
-      if (typeof msg === "string") statusText.textContent = msg;
-      track.style.display = busy ? "" : "none";
-    };
-    const setIdle = (msg) => setBusy(false, msg ?? "Idle.");
+        node._pollCount++;
 
-    const pollStatus = async () => {
-      if (!node.__hf_gid) return;
-      try {
-        const data = await getJSON(`/hf/status?gid=${encodeURIComponent(node.__hf_gid)}`);
-        // states: starting/running/done/error/stopped (from Python)
-        if (data?.state === "running" || data?.state === "starting") {
-          setBusy(true, data?.msg || "Download started…");
-        } else if (data?.state === "done") {
-          setIdle(data?.msg ? `✅ ${data.msg}` : "✅ File download complete.");
-          node.__hf_gid = null;
-          if (node.__hf_poll) {
-            clearInterval(node.__hf_poll);
-            node.__hf_poll = null;
+        try {
+          const response = await fetch(`/hf/status?gid=${encodeURIComponent(node.gid)}`, {
+            method: "GET",
+            headers: { "Content-Type": "application/json" }
+          });
+
+          if (!response.ok) {
+            throw new Error(`Status request failed: ${response.status}`);
           }
-        } else if (data?.state === "stopped") {
-          setIdle(data?.msg || "Stopped.");
-          node.__hf_gid = null;
-          if (node.__hf_poll) {
-            clearInterval(node.__hf_poll);
-            node.__hf_poll = null;
+
+          const status = await response.json();
+
+          if (status.error) {
+            statusText.textContent = `Error: ${status.error}`;
+            progressFill.style.width = "0%";
+            resetUI();
+            return;
           }
-        } else if (data?.state === "error") {
-          setIdle(data?.msg ? `❌ ${data.msg}` : "❌ Error.");
-          node.__hf_gid = null;
-          if (node.__hf_poll) {
-            clearInterval(node.__hf_poll);
-            node.__hf_poll = null;
+
+          // Update progress bar
+          const percent = Math.min(100, Math.max(0, parseFloat(status.percent) || 0));
+          progressFill.style.width = `${percent}%`;
+
+          // Update status text
+          const speed = status.downloadSpeed ? `${fmtBytes(status.downloadSpeed)}/s` : "";
+          const eta = status.eta ? `ETA: ${fmtETA(status.eta)}` : "";
+          const size = `${fmtBytes(status.completedLength || 0)}`;
+          const total = status.totalLength ? `/${fmtBytes(status.totalLength)}` : "";
+          statusText.textContent = `${percent.toFixed(1)}% - ${size}${total} ${speed} ${eta}`.trim();
+
+          // Check completion
+          if (status.status === "complete") {
+            statusText.textContent = `✅ Download complete: ${status.filename}`;
+            progressFill.style.width = "100%";
+            resetUI();
+          } else if (status.status === "error" || status.status === "stopped") {
+            statusText.textContent = status.status === "stopped" ? "Download stopped" : `Download failed: ${status.error || "Unknown error"}`;
+            progressFill.style.width = "0%";
+            resetUI();
+          }
+        } catch (error) {
+          console.warn("Status poll failed:", error);
+          if (node._pollCount > 10) {
+            statusText.textContent = `Error: Status check failed - ${error.message}`;
+            progressFill.style.width = "0%";
+            resetUI();
           }
         }
-      } catch (e) {
-        // If status fails temporarily, keep the bar but don’t crash
-        console.warn("HF status error:", e);
-      }
-    };
+      }, 1000); // Poll every 1 second
+    }
 
-    // ---- Start download ----
-    startBtn.addEventListener("click", async () => {
-      // Keep existing values without changing other functionality
+    downloadBtn.onclick = async () => {
       const repo_id = repoInput.value.trim();
       const filename = fileInput.value.trim();
       const dest_dir = destInput.value.trim();
 
       if (!repo_id || !filename || !dest_dir) {
-        statusText.textContent = "Please fill Repository ID, Filename, and Destination folder.";
+        statusText.textContent = "Please fill all fields";
+        progressFill.style.width = "0%";
         return;
       }
 
-      try {
-        setBusy(true, "Download started…");
-        const resp = await postJSON("/hf/start", { repo_id, filename, dest_dir, gid: node.__hf_gid || undefined });
-        if (resp?.ok) {
-          node.__hf_gid = resp.gid;
-          // (Re)start polling
-          if (node.__hf_poll) clearInterval(node.__hf_poll);
-          node.__hf_poll = setInterval(pollStatus, 1200);
-        } else {
-          setIdle(resp?.error ? `❌ ${resp.error}` : "❌ Failed to start.");
-        }
-      } catch (e) {
-        setIdle(`❌ ${e}`);
-      }
-    });
+      downloadBtn.disabled = true;
+      stopBtn.disabled = false;
+      statusText.textContent = "Starting download...";
+      progressFill.style.width = "0%";
 
-    // ---- Stop download (best-effort; mirrors Python behavior) ----
-    stopBtn.addEventListener("click", async () => {
-      if (!node.__hf_gid) {
-        setIdle("Stopped.");
-        return;
-      }
       try {
-        const resp = await postJSON("/hf/stop", { gid: node.__hf_gid });
-        // Clear UI regardless of backend’s ability to cancel the thread
-        setIdle(resp?.msg || "Stopped.");
-        node.__hf_gid = null;
-        if (node.__hf_poll) {
-          clearInterval(node.__hf_poll);
-          node.__hf_poll = null;
-        }
-      } catch (e) {
-        setIdle(`❌ ${e}`);
-      }
-    });
+        const response = await fetch("/hf/start", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ repo_id, filename, dest_dir })
+        });
 
-    // If a gid exists from a previous session, resume polling
-    if (node.__hf_gid && !node.__hf_poll) {
-      node.__hf_poll = setInterval(pollStatus, 1200);
-      setBusy(true, "Resuming…");
-      pollStatus();
-    } else {
-      setIdle("Idle.");
-    }
-  },
+        if (!response.ok) {
+          const errorText = await response.text();
+          throw new Error(`Start request failed: ${response.status} - ${errorText}`);
+        }
+
+        const result = await response.json();
+
+        if (result.error) {
+          statusText.textContent = `Error: ${result.error}`;
+          progressFill.style.width = "0%";
+          downloadBtn.disabled = false;
+          stopBtn.disabled = true;
+          return;
+        }
+
+        node.gid = result.gid;
+        statusText.textContent = "Download started...";
+        startPolling();
+      } catch (error) {
+        statusText.textContent = `Failed to start: ${error.message}`;
+        progressFill.style.width = "0%";
+        downloadBtn.disabled = false;
+        stopBtn.disabled = true;
+      }
+    };
+
+    stopBtn.onclick = async () => {
+      if (!node.gid) return;
+
+      try {
+        await fetch("/hf/stop", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ gid: node.gid })
+        });
+        statusText.textContent = "Stopping...";
+        progressFill.style.width = "0%";
+      } catch (error) {
+        console.warn("Stop request failed:", error);
+        statusText.textContent = `Error stopping: ${error.message}`;
+      }
+      resetUI();
+    };
+
+    // Cleanup on node removal
+    const originalOnRemoved = node.onRemoved;
+    node.onRemoved = function () {
+      resetUI();
+      if (wrap && wrap.parentNode) wrap.remove();
+      if (originalOnRemoved) originalOnRemoved.call(this);
+    };
+  }
 });
