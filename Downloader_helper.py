@@ -72,6 +72,7 @@ def _safe_expand(path_str: str) -> str:
 def _parse_cd_filename(cd: str) -> str | None:
     if not cd:
         return None
+    # RFC 5987: filename*=UTF-8''percent-encoded
     m = re.search(r'filename\*\s*=\s*[^\'";]+\'' + r"'" + r'([^;]+)', cd, flags=re.IGNORECASE)
     if m:
         try:
@@ -80,10 +81,12 @@ def _parse_cd_filename(cd: str) -> str | None:
             return n or None
         except Exception:
             pass
+    # filename="name"
     m = re.search(r'filename\s*=\s*"([^"]+)"', cd, flags=re.IGNORECASE)
     if m:
         n = _sanitize_filename(os.path.basename(m.group(1)))
         return n or None
+    # filename=name
     m = re.search(r'filename\s*=\s*([^;]+)', cd, flags=re.IGNORECASE)
     if m:
         n = _sanitize_filename(os.path.basename(m.group(1).strip()))
@@ -98,11 +101,14 @@ def _origin_from_url(u: str) -> str:
         return ""
 
 def _extract_query_filename(u: str) -> str | None:
+    """Common patterns used by CDNs: ?filename=, ?response-content-disposition=attachment;filename=..."""
     try:
         q = urllib.parse.parse_qs(urlparse(u).query)
+        # direct filename param
         for key in ("filename", "file", "name", "response-content-disposition"):
             if key in q and q[key]:
                 candidate = q[key][0]
+                # if response-content-disposition is passed through, parse it
                 if key == "response-content-disposition":
                     n = _parse_cd_filename(candidate)
                     if n:
@@ -115,6 +121,7 @@ def _extract_query_filename(u: str) -> str | None:
     return None
 
 def _head_follow(url: str, max_redirects: int = 5):
+    """HEAD first; if disallowed, try GET without reading body."""
     opener = urllib.request.build_opener()
     req = urllib.request.Request(url, method="HEAD")
     try:
@@ -126,9 +133,16 @@ def _head_follow(url: str, max_redirects: int = 5):
         raise
 
 def _smart_guess_filename(url: str) -> tuple[str | None, bool]:
+    """
+    Returns (name, confident).
+    confident=True only when derived from Content-Disposition or explicit query filename.
+    """
+    # 1) Query param hints
     qn = _extract_query_filename(url)
     if qn:
         return (qn, True)
+
+    # 2) HEAD/GET headers
     try:
         resp = _head_follow(url)
         cd = resp.headers.get("Content-Disposition") or resp.headers.get("content-disposition")
@@ -137,6 +151,8 @@ def _smart_guess_filename(url: str) -> tuple[str | None, bool]:
             return (n, True)
     except Exception:
         pass
+
+    # 3) URL path (not confident; let aria2 decide if possible)
     try:
         path_name = os.path.basename(urlparse(url).path)
         path_name = _sanitize_filename(path_name)
@@ -154,21 +170,12 @@ def _eta(total_len, done_len, speed):
     except Exception:
         return None
 
-# ========= NEW: token presence probe =========
-@PromptServer.instance.routes.get("/aria2/token_status")
-async def aria2_token_status(request):
-    has_env = bool(os.environ.get("HF_READ_TOKEN"))
-    return web.json_response({"has_env_token": has_env})
-
 # ========= API =========
 @PromptServer.instance.routes.post("/aria2/start")
 async def aria2_start(request):
     body = await request.json()
     url = (body.get("url") or "").strip()
     dest_dir = _safe_expand(body.get("dest_dir") or os.getcwd())
-
-    # NEW: optional token coming from UI; if missing, we'll fallback to env below
-    token_from_ui = (body.get("token") or "").strip()
 
     if not url:
         return web.json_response({"error": "URL is required."}, status=400)
@@ -188,6 +195,8 @@ async def aria2_start(request):
 
     guessed_name, confident = _smart_guess_filename(url)
 
+    # Map CLI options and add browser-like headers to coax proper CD filename
+    # NOTE: we set "out" ONLY if confident; otherwise we let aria2 use server-provided name.
     opts = {
         "continue": "true",
         "max-connection-per-server": "16",
@@ -204,17 +213,13 @@ async def aria2_start(request):
         ],
         "max-tries": "5",
     }
+    # Add Referer to mimic browser navigation when possible
     origin = _origin_from_url(url)
     if origin:
         opts["referer"] = origin
 
     if confident and guessed_name:
         opts["out"] = guessed_name
-
-    # NEW: Authorization header logic
-    token = token_from_ui or os.environ.get("HF_READ_TOKEN") or ""
-    if token:
-        opts["header"].append(f"Authorization: Bearer {token}")
 
     try:
         res = _aria2_rpc("addUri", [[url], opts])
@@ -226,7 +231,6 @@ async def aria2_start(request):
             "dest_dir": dest_dir,
             "guessed_out": opts.get("out", "") or "",
             "confident": bool(confident),
-            "using_env_token": bool(token_from_ui == "" and os.environ.get("HF_READ_TOKEN")),
         })
     except Exception as e:
         return web.json_response({"error": f"aria2c RPC error: {e}"}, status=500)
@@ -296,7 +300,7 @@ async def aria2_stop(request):
 class Aria2Downloader:
     @classmethod
     def INPUT_TYPES(cls):
-        return {"required": {}}
+        return {"required": {}}  # no backend auto-widgets
 
     RETURN_TYPES = ()
     FUNCTION = "noop"
