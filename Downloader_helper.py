@@ -27,8 +27,8 @@ RPC_START_ARGS = [
     "--console-log-level=error",
     "--disable-ipv6=true",
 ]
-if HF_TOKEN:
-    RPC_START_ARGS.append(f'--header=Authorization: Bearer {HF_TOKEN}')
+# if HF_TOKEN:
+#     RPC_START_ARGS.append(f'--header=Authorization: Bearer {HF_TOKEN}')
 
 # ========= RPC helper =========
 def _aria2_rpc(method, params=None):
@@ -125,10 +125,10 @@ def _extract_query_filename(u: str) -> str | None:
 def _auth_header():
     return {"Authorization": f"Bearer {HF_TOKEN}"} if HF_TOKEN else {}
     
-def _head_follow(url: str, max_redirects: int = 5):
+def _head_follow(url: str, max_redirects: int = 5, token: str | None = None):
     """HEAD first; if disallowed, try GET without reading body."""
     opener = urllib.request.build_opener()
-    headers = _auth_header()
+    headers = {"Authorization": f"Bearer {token}"} if token else {}
     # HEAD
     req = urllib.request.Request(url, method="HEAD", headers=headers)
     try:
@@ -140,7 +140,7 @@ def _head_follow(url: str, max_redirects: int = 5):
             return opener.open(req_get, timeout=10)
         raise
 
-def _smart_guess_filename(url: str) -> tuple[str | None, bool]:
+def _smart_guess_filename(url: str, token: str | None = None) -> tuple[str | None, bool]:
     """
     Returns (name, confident).
     confident=True only when derived from Content-Disposition or explicit query filename.
@@ -152,7 +152,7 @@ def _smart_guess_filename(url: str) -> tuple[str | None, bool]:
 
     # 2) HEAD/GET headers
     try:
-        resp = _head_follow(url)
+        resp = _head_follow(url, token=token)
         cd = resp.headers.get("Content-Disposition") or resp.headers.get("content-disposition")
         n = _parse_cd_filename(cd) if cd else None
         if n:
@@ -184,6 +184,7 @@ async def aria2_start(request):
     body = await request.json()
     url = (body.get("url") or "").strip()
     dest_dir = _safe_expand(body.get("dest_dir") or os.getcwd())
+    
 
     if not url:
         return web.json_response({"error": "URL is required."}, status=400)
@@ -201,7 +202,7 @@ async def aria2_start(request):
     except Exception as e:
         return web.json_response({"error": str(e)}, status=500)
 
-    guessed_name, confident = _smart_guess_filename(url)
+    guessed_name, confident = _smart_guess_filename(url, token=token)
 
     # Map CLI options and add browser-like headers to coax proper CD filename
     # NOTE: we set "out" ONLY if confident; otherwise we let aria2 use server-provided name.
@@ -221,6 +222,8 @@ async def aria2_start(request):
         ],
         "max-tries": "5",
     }
+    if token:
+        opts["header"].append(f"Authorization: Bearer {token}")
     # Add Referer to mimic browser navigation when possible
     origin = _origin_from_url(url)
     if origin:
@@ -316,6 +319,7 @@ class Aria2Downloader:
 
     def noop(self):
         return ()
+
 
 
 
