@@ -1,19 +1,17 @@
 import os
 import re
+import json
 import time
 import asyncio
-import logging
 from uuid import uuid4
 from typing import Dict, Any
 from concurrent.futures import ThreadPoolExecutor
 import threading
+import weakref
+
 from aiohttp import web
 from server import PromptServer
 from huggingface_hub import HfApi, hf_hub_download
-
-# Setup logging
-logging.basicConfig(level=logging.DEBUG)
-logger = logging.getLogger(__name__)
 
 # ========= Progress store with automatic cleanup =========
 _downloads: Dict[str, Dict[str, Any]] = {}
@@ -49,102 +47,110 @@ def _schedule_cleanup(gid: str, delay: float = 10.0):
     thread = threading.Thread(target=delayed_cleanup, daemon=True)
     thread.start()
 
-# ========= Async download function =========
+# ========= Async download function using hf_hub_download =========
 async def _download_file_async(gid: str, repo_id: str, filename: str, dest_dir: str, token: str = None):
-    """Async download using hf_hub_download with progress callback"""
+    """Async download function using hf_hub_download with file size polling for progress"""
     info = _downloads[gid]
     final_path = os.path.join(dest_dir, _sanitize_filename(filename))
+    tmp_path = final_path + ".part"  # Temporary file used by hf_hub_download
     info["filepath"] = final_path
-    logger.debug(f"Starting download: repo_id={repo_id}, filename={filename}, dest_dir={dest_dir}")
 
     try:
-        # Get file info for total size and verify existence
+        # Get file info to set total size and verify existence
         def get_file_info():
             api = HfApi(token=token) if token else HfApi()
             try:
-                paths_info = api.get_paths_info(repo_id=repo_id, repo_type="model", paths=[filename])
-                if not paths_info or filename not in [p.path for p in paths_info]:
-                    raise ValueError(f"File {filename} not found in repo {repo_id}")
-                file_info = next(p for p in paths_info if p.path == filename)
-                size = int(file_info.size or 0)
-                logger.debug(f"File info retrieved: size={size} bytes")
-                return size
+                # Use get_paths_info (available in huggingface_hub >= 0.23.0)
+                try:
+                    paths_info = api.get_paths_info(repo_id=repo_id, repo_type="model", paths=[filename])
+                    if not paths_info or filename not in [p.path for p in paths_info]:
+                        raise ValueError(f"File {filename} not found in repo {repo_id}")
+                    file_info = next(p for p in paths_info if p.path == filename)
+                    return int(file_info.size or 0)
+                except AttributeError:
+                    # Fallback for older versions: use list_repo_files
+                    files = api.list_repo_files(repo_id=repo_id, repo_type="model")
+                    if filename not in files:
+                        raise ValueError(f"File {filename} not found in repo {repo_id}")
+                    # Size not available in older versions, return 0 (progress % won't work)
+                    return 0
             except Exception as e:
-                logger.error(f"Failed to get file info: {str(e)}")
-                raise
-
+                raise ValueError(f"Failed to get file info: {str(e)}")
+        
         total = await asyncio.get_event_loop().run_in_executor(_executor, get_file_info)
         info["totalLength"] = total
         info["status"] = "active"
 
-        # Progress callback
-        last_update = time.time()
-        last_downloaded = 0
+        # Start progress polling
+        async def poll_progress():
+            last_downloaded = 0
+            last_update = time.time()
+            while info["status"] == "active" and not _stop_flags.get(gid, False):
+                try:
+                    downloaded = os.path.getsize(tmp_path) if os.path.exists(tmp_path) else 0
+                    info["completedLength"] = downloaded
+                    if total > 0:
+                        info["percent"] = min(100.0, (downloaded / total) * 100.0)
+                    
+                    now = time.time()
+                    if now - last_update >= 0.5:  # Update every 500ms
+                        dt = now - last_update
+                        speed = (downloaded - last_downloaded) / dt if dt > 0 else 0
+                        info["downloadSpeed"] = int(speed)
+                        info["eta"] = _eta(total, downloaded, speed)
+                        last_update = now
+                        last_downloaded = downloaded
+                    
+                    await asyncio.sleep(0.5)  # Poll every 500ms
+                except Exception:
+                    # Ignore transient errors (e.g., file not yet created)
+                    await asyncio.sleep(0.5)
+                    continue
 
-        def progress_callback(downloaded: int, total_size: int):
-            nonlocal last_update, last_downloaded
-            if _stop_flags.get(gid, False):
-                raise InterruptedError("Download stopped by user")
-            
-            info["completedLength"] = downloaded
-            now = time.time()
-            if now - last_update >= 0.5:  # Update every 500ms
-                dt = now - last_update
-                speed = (downloaded - last_downloaded) / dt
-                info["downloadSpeed"] = int(speed)
-                if total > 0:
-                    info["percent"] = min(100.0, (downloaded / total) * 100.0)
-                info["eta"] = _eta(total, downloaded, speed)
-                last_update = now
-                last_downloaded = downloaded
-                logger.debug(f"Progress: downloaded={downloaded}, percent={info.get('percent', 0):.1f}%")
+        # Run hf_hub_download in thread pool
+        def download_file():
+            return hf_hub_download(
+                repo_id=repo_id,
+                filename=filename,
+                local_dir=dest_dir,
+                local_dir_use_symlinks=False,
+                token=token
+            )
 
-        # Download file
-        def download_task():
-            try:
-                return hf_hub_download(
-                    repo_id=repo_id,
-                    filename=filename,
-                    local_dir=dest_dir,
-                    token=token,
-                    progress_callback=progress_callback,
-                    force_download=False
-                )
-            except InterruptedError:
-                raise
-            except Exception as e:
-                logger.error(f"Download failed: {str(e)}")
-                raise
+        # Start polling task
+        polling_task = asyncio.create_task(poll_progress())
 
-        file_path = await asyncio.get_event_loop().run_in_executor(_executor, download_task)
-        info["status"] = "complete"
-        info["percent"] = 100.0
-        info["filepath"] = file_path
-        logger.debug(f"Download complete: {file_path}")
+        try:
+            await asyncio.get_event_loop().run_in_executor(_executor, download_file)
+            info["status"] = "complete"
+            info["percent"] = 100.0
+        except asyncio.CancelledError:
+            polling_task.cancel()
+            raise
+        except Exception as e:
+            polling_task.cancel()
+            raise
+        finally:
+            polling_task.cancel()  # Ensure polling stops
 
-    except InterruptedError:
+    except asyncio.CancelledError:
         info["status"] = "stopped"
-        logger.debug(f"Download stopped for gid={gid}")
+        # Clean up partial download
+        if os.path.exists(tmp_path):
+            try:
+                os.remove(tmp_path)
+            except:
+                pass
     except Exception as e:
         info["status"] = "error"
         info["error"] = str(e)
-        logger.error(f"Download error: {str(e)}")
+        if os.path.exists(tmp_path):
+            try:
+                os.remove(tmp_path)
+            except:
+                pass
     finally:
-        # Cleanup partial files
-        if info["status"] != "complete":
-            part_file = final_path + ".part"
-            if os.path.exists(part_file):
-                try:
-                    os.remove(part_file)
-                    logger.debug(f"Cleaned up partial file: {part_file}")
-                except:
-                    pass
-            if os.path.exists(final_path):
-                try:
-                    os.remove(final_path)
-                    logger.debug(f"Cleaned up incomplete file: {final_path}")
-                except:
-                    pass
+        # Schedule cleanup
         _schedule_cleanup(gid)
 
 # Store active download tasks
@@ -156,7 +162,6 @@ async def hf_start(request):
     try:
         body = await request.json()
     except json.JSONDecodeError:
-        logger.error("Invalid JSON in /hf/start request")
         return web.json_response({"error": "Invalid JSON in request body"}, status=400)
         
     repo_id = (body.get("repo_id") or "").strip()
@@ -164,29 +169,24 @@ async def hf_start(request):
     dest_dir = (body.get("dest_dir") or "").strip()
     
     if not repo_id or not filename or not dest_dir:
-        error_msg = "repo_id, filename, and dest_dir are required"
-        logger.error(f"/hf/start failed: {error_msg}")
-        return web.json_response({"error": error_msg}, status=400)
+        return web.json_response({"error": "repo_id, filename, and dest_dir are required"}, status=400)
     
     # Validate destination directory
     try:
+        # Ensure dest_dir is a valid directory path
         if os.path.exists(dest_dir) and not os.path.isdir(dest_dir):
-            error_msg = f"Destination path {dest_dir} is not a directory"
-            logger.error(error_msg)
-            return web.json_response({"error": error_msg}, status=400)
+            return web.json_response({"error": f"Destination path {dest_dir} is not a directory"}, status=400)
         os.makedirs(dest_dir, exist_ok=True)
+        # Create a temporary file to test write permissions
         test_file = os.path.join(dest_dir, f".test_write_{uuid4().hex}")
         with open(test_file, "w") as f:
             f.write("test")
         os.remove(test_file)
     except Exception as e:
-        error_msg = f"Cannot access or write to destination directory {dest_dir}: {str(e)}"
-        logger.error(error_msg)
-        return web.json_response({"error": error_msg}, status=400)
+        return web.json_response({"error": f"Cannot access or write to destination directory {dest_dir}: {str(e)}"}, status=400)
 
     gid = uuid4().hex
     token = os.environ.get("HF_READ_TOKEN") or os.environ.get("HF_TOKEN")
-    logger.debug(f"Starting download task: gid={gid}, repo_id={repo_id}, filename={filename}, dest_dir={dest_dir}")
 
     # Initialize download info
     info = {
@@ -212,7 +212,6 @@ async def hf_start(request):
     # Clean up task when done
     def cleanup_task(task):
         _active_tasks.pop(gid, None)
-        logger.debug(f"Cleaned up task: gid={gid}")
     task.add_done_callback(cleanup_task)
     
     return web.json_response({
@@ -226,12 +225,10 @@ async def hf_start(request):
 async def hf_status(request):
     gid = request.query.get("gid")
     if not gid:
-        logger.error("Missing gid in /hf/status request")
         return web.json_response({"error": "gid parameter required"}, status=400)
     
     with _cleanup_lock:
         if gid not in _downloads:
-            logger.error(f"Unknown gid in /hf/status: {gid}")
             return web.json_response({"error": "unknown gid"}, status=404)
         info = _downloads[gid].copy()  # Copy to avoid race conditions
     
@@ -250,7 +247,6 @@ async def hf_status(request):
     if info.get("status") == "error" and info.get("error"):
         out["error"] = info["error"]
     
-    logger.debug(f"Status response for gid={gid}: {out}")
     return web.json_response(out)
 
 @PromptServer.instance.routes.post("/hf/stop")
@@ -259,16 +255,13 @@ async def hf_stop(request):
         body = await request.json()
         gid = (body.get("gid") or "").strip()
     except json.JSONDecodeError:
-        logger.error("Invalid JSON in /hf/stop request")
         return web.json_response({"error": "Invalid JSON in request body"}, status=400)
     
     if not gid:
-        logger.error("Missing gid in /hf/stop request")
         return web.json_response({"error": "gid is required"}, status=400)
     
     # Set stop flag
     _stop_flags[gid] = True
-    logger.debug(f"Stop requested for gid={gid}")
     
     # Cancel active task if it exists
     task = _active_tasks.get(gid)
