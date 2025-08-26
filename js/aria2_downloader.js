@@ -217,6 +217,9 @@ app.registerExtension({
       const tokenInputWidget = this.addDOMWidget("token", "TOKEN", tokenInput);
       tokenInputWidget.computeSize = () => [this.size[0] - 20, 34];
 
+      const spacer = this.addWidget("info", "", "");
+      spacer.computeSize = () => [this.size[0] - 20, 10];
+
       // --- State for progress view ---
       this.gid = null;
       this._status = "Idle";
@@ -382,6 +385,7 @@ app.registerExtension({
     };
   },
 });
+
 
 
 
