@@ -11,9 +11,11 @@ function el(tag, attrs = {}, ...children) {
   return n;
 }
 
+// Inject CSS for indeterminate bar (scoped + forced blue)
 (function ensureIndeterminateStyle() {
-  if (document.getElementById("hf-indeterminate-style")) return;
-  const style = document.createElement("style");
+  let style = document.getElementById("hf-indeterminate-style");
+  if (style) return;
+  style = document.createElement("style");
   style.id = "hf-indeterminate-style";
   style.textContent = `
 @keyframes hfIndeterminate {
@@ -21,21 +23,23 @@ function el(tag, attrs = {}, ...children) {
   50%  { transform: translateX(0%); }
   100% { transform: translateX(100%); }
 }
-.hf-track {
-  position: relative;
-  height: 10px;
-  background: #333;
-  border-radius: 5px;
-  overflow: hidden;
-  width: 100%;
+/* Scoped to our wrapper */
+.az-hf-hub-downloader .hf-track {
+  position: relative !important;
+  height: 12px !important;
+  background: #222 !important;
+  border-radius: 6px !important;
+  overflow: hidden !important;
+  width: 100% !important;
 }
-.hf-bar {
-  position: absolute;
-  inset: 0 auto 0 0;
-  width: 35%;
-  background: #0084ff;
-  border-radius: 5px;
-  animation: hfIndeterminate 1.2s linear infinite;
+.az-hf-hub-downloader .hf-bar {
+  position: absolute !important;
+  inset: 0 auto 0 0 !important;
+  width: 36% !important;
+  border-radius: 6px !important;
+  animation: hfIndeterminate 1.1s linear infinite !important;
+  background: #0084ff !important;   /* force the blue */
+  opacity: 0.95 !important;
 }
 `;
   document.head.appendChild(style);
@@ -46,8 +50,9 @@ app.registerExtension({
   async nodeCreated(node) {
     if (node.comfyClass !== "hf_hub_downloader") return;
 
-    // ====== UI (DOM) — unchanged structure ======
+    // ====== UI (DOM) ======
     const wrap = el("div", {
+      className: "az-hf-hub-downloader",  // scope for CSS
       style: {
         display: "flex",
         flexDirection: "column",
@@ -76,7 +81,7 @@ app.registerExtension({
       style: { width: "100%", padding: "4px", boxSizing: "border-box" }
     });
 
-    // Indeterminate bar (unchanged) — hidden until running
+    // Indeterminate progress bar
     const progressTrack = el("div", { className: "hf-track", style: { display: "none" } });
     const progressIndet = el("div", { className: "hf-bar" });
     progressTrack.append(progressIndet);
@@ -93,17 +98,16 @@ app.registerExtension({
 
     wrap.append(repoInput, fileInput, destInput, progressTrack, statusText, buttonRow);
 
-    // DOM widget with a FIXED min-height so the node doesn’t keep growing vertically
-    const MIN_W = 460;        // wider node
-    const MIN_H = 190;        // fixed minimum height for the widget area
+    // Add DOM widget with fixed min height
+    const MIN_W = 460;
+    const MIN_H = 190;
     node.addDOMWidget("hf_downloader", "dom", wrap, {
       serialize: false,
       hideOnZoom: false,
-      getMinHeight: () => MIN_H   // << key change: stop auto-elastic height
+      getMinHeight: () => MIN_H
     });
 
-    // ====== Size & resizing behavior (fix “elongated height”) ======
-    // Start wider; clamp resize to sensible bounds.
+    // ====== Size fixes ======
     const MAX_H = 300;
     node.size = [
       Math.max(node.size?.[0] || MIN_W, MIN_W),
@@ -111,19 +115,18 @@ app.registerExtension({
     ];
     const prevOnResize = node.onResize;
     node.onResize = function() {
-      // Clamp width & height so it doesn’t stretch uncontrollably
       this.size[0] = Math.max(this.size[0], MIN_W);
       this.size[1] = Math.min(Math.max(this.size[1], MIN_H), MAX_H);
       if (prevOnResize) prevOnResize.apply(this, arguments);
     };
 
-    // ====== State / behavior (only tweak: do NOT overwrite finished msg) ======
+    // ====== State ======
     node.gid = null;
     node._pollInterval = null;
     node._pollCount = 0;
 
     function showBar(on) {
-      progressTrack.style.display = on ? "" : "none";
+      progressTrack.style.display = on ? "block" : "none"; // force block
     }
     function setButtons(running) {
       downloadBtn.disabled = !!running;
@@ -136,7 +139,6 @@ app.registerExtension({
       }
     }
     function resetToIdle(msg = "Ready") {
-      // Used for initial state / stop / hard errors — NOT for success
       setButtons(false);
       showBar(false);
       statusText.textContent = msg;
@@ -148,14 +150,12 @@ app.registerExtension({
     function startPolling() {
       stopPolling();
       node._pollCount = 0;
-
       node._pollInterval = setInterval(async () => {
-        if (!node.gid || node._pollCount > 200) { // ~3 min safety cap
+        if (!node.gid || node._pollCount > 200) {
           resetToIdle("Ready");
           return;
         }
         node._pollCount++;
-
         try {
           const res = await fetch(`/hf/status?gid=${encodeURIComponent(node.gid)}`, { method: "GET" });
           if (!res.ok) throw new Error(`Status ${res.status}`);
@@ -164,7 +164,6 @@ app.registerExtension({
             resetToIdle(`Error: ${st.error}`);
             return;
           }
-
           const state = st.state || st.status;
           if (state === "starting" || state === "running") {
             statusText.textContent = st.msg || "Download started...";
@@ -172,9 +171,7 @@ app.registerExtension({
             setButtons(true);
             return;
           }
-
           if (state === "done" || state === "complete") {
-            // <<< DO NOT call resetToIdle here — keep the success message visible
             statusText.textContent = st.msg ? `✅ ${st.msg}` : "✅ File download complete";
             showBar(false);
             setButtons(false);
@@ -182,12 +179,10 @@ app.registerExtension({
             stopPolling();
             return;
           }
-
           if (state === "stopped") {
             resetToIdle(st.msg || "Stopped.");
             return;
           }
-
           if (state === "error") {
             resetToIdle(st.msg ? `Error: ${st.msg}` : "Error.");
             return;
@@ -206,17 +201,14 @@ app.registerExtension({
       const repo_id = repoInput.value.trim();
       const filename = fileInput.value.trim();
       const dest_dir = destInput.value.trim();
-
       if (!repo_id || !filename || !dest_dir) {
         statusText.textContent = "Please fill all fields";
         showBar(false);
         return;
       }
-
       setButtons(true);
       statusText.textContent = "Starting download...";
       showBar(false);
-
       try {
         const res = await fetch("/hf/start", {
           method: "POST",
@@ -256,11 +248,10 @@ app.registerExtension({
     };
 
     // ====== Init ======
-    // Wider default width immediately visible
     node.size[0] = Math.max(node.size[0], MIN_W);
     resetToIdle("Ready");
 
-    // Clean up
+    // Cleanup
     const originalOnRemoved = node.onRemoved;
     node.onRemoved = function () {
       stopPolling();
