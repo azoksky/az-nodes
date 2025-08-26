@@ -56,15 +56,25 @@ async def _download_file_async(gid: str, repo_id: str, filename: str, dest_dir: 
     info["filepath"] = final_path
 
     try:
-        # Get file info to set total size
+        # Get file info to set total size and verify existence
         def get_file_info():
             api = HfApi(token=token) if token else HfApi()
             try:
-                # Verify file exists
-                if not api.file_exists(repo_id=repo_id, filename=filename, repo_type="model"):
-                    raise ValueError(f"File {filename} not found in repo {repo_id}")
-                file_info = api.file_metadata(repo_id=repo_id, repo_type="model", path_in_repo=filename)
-                return int(file_info.size or 0)
+                # Check if file exists and get metadata
+                try:
+                    # Use get_paths_info (available in huggingface_hub >= 0.23.0)
+                    paths_info = api.get_paths_info(repo_id=repo_id, repo_type="model", paths=[filename])
+                    if not paths_info or filename not in [p.path for p in paths_info]:
+                        raise ValueError(f"File {filename} not found in repo {repo_id}")
+                    file_info = next(p for p in paths_info if p.path == filename)
+                    return int(file_info.size or 0)
+                except AttributeError:
+                    # Fallback for older versions: use list_repo_files
+                    files = api.list_repo_files(repo_id=repo_id, repo_type="model")
+                    if filename not in files:
+                        raise ValueError(f"File {filename} not found in repo {repo_id}")
+                    # Size not available in older versions, return 0 (progress % won't work)
+                    return 0
             except Exception as e:
                 raise ValueError(f"Failed to get file info: {str(e)}")
         
@@ -93,7 +103,7 @@ async def _download_file_async(gid: str, repo_id: str, filename: str, dest_dir: 
                         last_downloaded = downloaded
                     
                     await asyncio.sleep(0.5)  # Poll every 500ms
-                except Exception as e:
+                except Exception:
                     # Ignore transient errors (e.g., file not yet created)
                     await asyncio.sleep(0.5)
                     continue
@@ -165,7 +175,7 @@ async def hf_start(request):
     # Validate destination directory
     try:
         os.makedirs(dest_dir, exist_ok=True)
-        if not os.access(dest_dir, os.W_OK):
+        if not os.access(dest_dir, os.W_WRITEABLE):
             return web.json_response({"error": "Destination directory is not writable"}, status=400)
     except Exception as e:
         return web.json_response({"error": f"Cannot access destination: {e}"}, status=400)
@@ -265,7 +275,7 @@ class hf_hub_downloader:
     def INPUT_TYPES(cls):
         return {"required": {}}
 
-    RETURN_TYPES = ()
+    RETURN_TYPES = []
     FUNCTION = "noop"
     CATEGORY = "AZ_Nodes"
 
