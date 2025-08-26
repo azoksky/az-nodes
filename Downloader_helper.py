@@ -72,7 +72,6 @@ def _safe_expand(path_str: str) -> str:
 def _parse_cd_filename(cd: str) -> str | None:
     if not cd:
         return None
-    # RFC 5987: filename*=UTF-8''percent-encoded
     m = re.search(r'filename\*\s*=\s*[^\'";]+\'' + r"'" + r'([^;]+)', cd, flags=re.IGNORECASE)
     if m:
         try:
@@ -81,12 +80,10 @@ def _parse_cd_filename(cd: str) -> str | None:
             return n or None
         except Exception:
             pass
-    # filename="name"
     m = re.search(r'filename\s*=\s*"([^"]+)"', cd, flags=re.IGNORECASE)
     if m:
         n = _sanitize_filename(os.path.basename(m.group(1)))
         return n or None
-    # filename=name
     m = re.search(r'filename\s*=\s*([^;]+)', cd, flags=re.IGNORECASE)
     if m:
         n = _sanitize_filename(os.path.basename(m.group(1).strip()))
@@ -101,14 +98,11 @@ def _origin_from_url(u: str) -> str:
         return ""
 
 def _extract_query_filename(u: str) -> str | None:
-    """Common patterns used by CDNs: ?filename=, ?response-content-disposition=attachment;filename=..."""
     try:
         q = urllib.parse.parse_qs(urlparse(u).query)
-        # direct filename param
         for key in ("filename", "file", "name", "response-content-disposition"):
             if key in q and q[key]:
                 candidate = q[key][0]
-                # if response-content-disposition is passed through, parse it
                 if key == "response-content-disposition":
                     n = _parse_cd_filename(candidate)
                     if n:
@@ -121,7 +115,6 @@ def _extract_query_filename(u: str) -> str | None:
     return None
 
 def _head_follow(url: str, max_redirects: int = 5):
-    """HEAD first; if disallowed, try GET without reading body."""
     opener = urllib.request.build_opener()
     req = urllib.request.Request(url, method="HEAD")
     try:
@@ -133,16 +126,9 @@ def _head_follow(url: str, max_redirects: int = 5):
         raise
 
 def _smart_guess_filename(url: str) -> tuple[str | None, bool]:
-    """
-    Returns (name, confident).
-    confident=True only when derived from Content-Disposition or explicit query filename.
-    """
-    # 1) Query param hints
     qn = _extract_query_filename(url)
     if qn:
         return (qn, True)
-
-    # 2) HEAD/GET headers
     try:
         resp = _head_follow(url)
         cd = resp.headers.get("Content-Disposition") or resp.headers.get("content-disposition")
@@ -151,8 +137,6 @@ def _smart_guess_filename(url: str) -> tuple[str | None, bool]:
             return (n, True)
     except Exception:
         pass
-
-    # 3) URL path (not confident; let aria2 decide if possible)
     try:
         path_name = os.path.basename(urlparse(url).path)
         path_name = _sanitize_filename(path_name)
@@ -170,7 +154,7 @@ def _eta(total_len, done_len, speed):
     except Exception:
         return None
 
-# ========= Path suggestion backend (mirrors path_uploader) =========
+# ========= Path suggestion backend (like path_uploader) =========
 import fnmatch
 import pathlib
 
@@ -178,23 +162,22 @@ _SUGGEST_HISTORY = os.path.join(pathlib.Path.home(), ".aria2_path_history.json")
 _SUGGEST_LIMIT = 50
 _MAX_HISTORY = 200
 
-def _normalize_slashes(path: str) -> str:
+def _norm(path: str) -> str:
     if not path:
         return ""
     p = path.replace("\\", "/")
-    # collapse repeats but keep UNC //server
     while "//" in p and not p.startswith("//"):
         p = p.replace("//", "/")
     return p
 
-def _expand_user_vars(s: str) -> str:
+def _expand(s: str) -> str:
     try:
         return os.path.expanduser(os.path.expandvars(s or ""))
     except Exception:
         return s or ""
 
-def _split_base_and_glob(prefix: str):
-    raw = _normalize_slashes(_expand_user_vars(prefix.strip()))
+def _split(prefix: str):
+    raw = _norm(_expand(prefix.strip()))
     if not raw:
         return pathlib.Path("."), "*"
     if raw.endswith("/"):
@@ -204,7 +187,7 @@ def _split_base_and_glob(prefix: str):
     base = p.parent if str(p.parent) not in ("", ".") else (pathlib.Path("/") if raw.startswith("/") else pathlib.Path("."))
     return base, (p.name + "*")
 
-def _iter_dir(base: pathlib.Path):
+def _iter(base: pathlib.Path):
     try:
         with os.scandir(base) as it:
             for e in it:
@@ -223,7 +206,7 @@ def _hist_load():
 def _hist_add(path: str):
     if not path:
         return
-    path = _normalize_slashes(path)
+    path = _norm(path)
     h = _hist_load()
     h = [p for p in h if p != path]
     h.insert(0, path)
@@ -234,30 +217,28 @@ def _hist_add(path: str):
         pass
 
 def suggest_paths(prefix: str, limit: int = _SUGGEST_LIMIT):
-    pref = _normalize_slashes(prefix or "")
-    base, patt = _split_base_and_glob(pref)
-    res = []
-    seen = set()
+    pref = _norm(prefix or "")
+    base, patt = _split(pref)
+    res, seen = [], set()
     # history first
     for h in _hist_load():
-        n = _normalize_slashes(h)
+        n = _norm(h)
         if n.lower().startswith(pref.lower()) and n not in seen:
             res.append(n); seen.add(n)
             if len(res) >= limit:
                 return res
     # fs matches
-    base_exp = pathlib.Path(_expand_user_vars(str(base)))
-    for child in _iter_dir(base_exp):
-        name = child.name
-        if not fnmatch.fnmatch(name, patt):
+    base_exp = pathlib.Path(_expand(str(base)))
+    for ch in _iter(base_exp):
+        if not fnmatch.fnmatch(ch.name, patt):
             continue
         try:
-            p = _normalize_slashes(str(child))
+            p = _norm(str(ch))
             if p not in seen:
                 res.append(p); seen.add(p)
                 if len(res) >= limit:
                     break
-            if child.is_dir():
+            if ch.is_dir():
                 d = p + "/"
                 if d not in seen:
                     res.append(d); seen.add(d)
@@ -282,12 +263,10 @@ async def aria2_start(request):
 
     if not url:
         return web.json_response({"error": "URL is required."}, status=400)
-
     try:
         os.makedirs(dest_dir, exist_ok=True)
     except Exception as e:
         return web.json_response({"error": f"Cannot access destination: {e}"}, status=400)
-
     if not os.path.isdir(dest_dir) or not os.access(dest_dir, os.W_OK):
         return web.json_response({"error": f"Destination not writable: {dest_dir}"}, status=400)
 
@@ -298,8 +277,6 @@ async def aria2_start(request):
 
     guessed_name, confident = _smart_guess_filename(url)
 
-    # Map CLI options and add browser-like headers to coax proper CD filename
-    # NOTE: we set "out" ONLY if confident; otherwise we let aria2 use server-provided name.
     opts = {
         "continue": "true",
         "max-connection-per-server": "16",
@@ -311,16 +288,13 @@ async def aria2_start(request):
         "header": [
             "Accept: */*",
             "Accept-Language: en-US,en;q=0.9",
-            "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-            "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+            "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
         ],
         "max-tries": "5",
     }
-    # Add Referer to mimic browser navigation when possible
     origin = _origin_from_url(url)
     if origin:
         opts["referer"] = origin
-
     if confident and guessed_name:
         opts["out"] = guessed_name
 
@@ -329,8 +303,7 @@ async def aria2_start(request):
         gid = res.get("result")
         if not gid:
             return web.json_response({"error": "aria2c did not return a gid."}, status=500)
-        # record successful destination in suggestions history
-        _hist_add(dest_dir)
+        _hist_add(dest_dir)  # remember destination
         return web.json_response({
             "gid": gid,
             "dest_dir": dest_dir,
@@ -345,7 +318,6 @@ async def aria2_status(request):
     gid = request.query.get("gid", "")
     if not gid:
         return web.json_response({"error": "gid is required."}, status=400)
-
     try:
         res = _aria2_rpc("tellStatus", [gid, [
             "status", "totalLength", "completedLength", "downloadSpeed",
