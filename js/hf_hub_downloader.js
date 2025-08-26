@@ -22,13 +22,15 @@ function normalizePath(p){return (p||"").replaceAll("\\\\","/");}
  */
 function el(tag, attrs={}, ...children){
   const n = document.createElement(tag);
-  Object.assign(n, attrs);
+  const { style, ...rest } = attrs || {};
+  if (rest) Object.assign(n, rest);
+  if (style && typeof style === "object") Object.assign(n.style, style);
   for (const c of children) n.append(c);
   return n;
 }
 
 /**
- * Register a UI-only node (same class name so backend mapping stays intact)
+ * Register a UI-only node
  */
 app.registerExtension({
   name: "aznodes.hf_hub_downloader",
@@ -77,7 +79,6 @@ app.registerExtension({
     }
 
     destInput.addEventListener("input", async () => {
-      // ask backend for suggestions (same endpoint your PathUploader uses)
       try {
         const q = destInput.value.trim();
         const resp = await api.fetchApi(`/path_uploader/list?q=${encodeURIComponent(q)}`);
