@@ -184,6 +184,7 @@ async def aria2_start(request):
     body = await request.json()
     url = (body.get("url") or "").strip()
     dest_dir = _safe_expand(body.get("dest_dir") or os.getcwd())
+    token = (body.get("token") or "").strip()
     
 
     if not url:
@@ -319,6 +320,7 @@ class Aria2Downloader:
 
     def noop(self):
         return ()
+
 
 
 
