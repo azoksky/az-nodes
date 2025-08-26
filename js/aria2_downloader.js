@@ -190,17 +190,18 @@ app.registerExtension({
 
       // --- Inputs (URL + button) ---
       //this.addWidget("text", "URL", this.properties.url, v => this.properties.url = v ?? "");
-      const url = document.createElement("input");
-      url.type="text";
-      url.placeholder="URL)";
-      Object.assign(url.style,{
+      const urlInput = document.createElement("input");
+      urlInput.type = "text";
+      urlInput.placeholder = "URL";
+      Object.assign(urlInput.style, {
         width:"100%", height:"26px", padding:"2px 8px",
         border:"1px solid #444", borderRadius:"6px",
         background:"var(--comfy-input-bg, #2a2a2a)", color:"#ddd",
         boxSizing:"border-box", outline:"none"
-      }); 
-      url.value = this.properties.url;
-      container.appendChild(url);
+          });
+      urlInput.value = this.properties.url || "";  // optional prefill
+      const urlWidget = this.addDOMWidget("url", "URL", urlInput);
+      urlWidget.computeSize = () => [this.size[0] - 20, 34];
 
       // --- State for progress view ---
       this.gid = null;
@@ -216,7 +217,7 @@ app.registerExtension({
       this.addWidget("button", "Download", "Start", async () => {
         if (this.gid) return;
 
-        const url = (this.properties.url || "").trim();
+        const url = (urlInput.value || "").trim();
         const dest = (this.properties.dest_dir || "").trim();
         if (!url) { this._status = "Missing URL"; this.setDirtyCanvas(true); return; }
 
@@ -367,4 +368,5 @@ app.registerExtension({
     };
   },
 });
+
 
