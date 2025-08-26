@@ -55,6 +55,7 @@ async def start_download(request: web.Request):
         repo_id = (data.get("repo_id") or "").strip()
         filename = (data.get("filename") or "").strip()
         dest_dir = (data.get("dest_dir") or "").strip()
+        token = (data.get("token_input ") or "").strip()
 
         if not repo_id or not filename or not dest_dir:
             return web.json_response({"ok": False, "error": "repo_id, filename, dest_dir are required"}, status=400)
@@ -62,7 +63,7 @@ async def start_download(request: web.Request):
         os.makedirs(dest_dir, exist_ok=True)
 
         gid = data.get("gid") or uuid4().hex
-        token = os.getenv("HF_READ_TOKEN") or None
+        
 
         # create record
         _downloads[gid] = {
