@@ -68,6 +68,12 @@ app.registerExtension({
       placeholder: "Repository ID (e.g. runwayml/stable-diffusion-v1-5)",
       style: { width: "100%", padding: "4px", boxSizing: "border-box" }
     });
+    
+    const tokenInput = el("input", {
+      type: "text",
+      placeholder: "Secret Token, if any",
+      style: { width: "100%", padding: "4px", boxSizing: "border-box" }
+    });
 
     const fileInput = el("input", {
       type: "text",
@@ -96,7 +102,7 @@ app.registerExtension({
     const stopBtn = el("button", { textContent: "Stop", disabled: true, style: { padding: "6px 12px", cursor: "pointer" } });
     buttonRow.append(downloadBtn, stopBtn);
 
-    wrap.append(repoInput, fileInput, destInput, progressTrack, statusText, buttonRow);
+    wrap.append(repoInput, tokenInput, fileInput, destInput, progressTrack, statusText, buttonRow);
 
     // Add DOM widget with fixed min height
     const MIN_W = 460;
