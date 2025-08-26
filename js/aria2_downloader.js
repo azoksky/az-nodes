@@ -16,6 +16,8 @@ function fmtETA(s) {
   return `${sec}s`;
 }
 
+const normalizePath = (p) => (p || "").replace(/\\/g, "/");
+
 app.registerExtension({
   name: "comfyui.aria2.downloader",
   beforeRegisterNodeDef(nodeType, nodeData) {
@@ -27,14 +29,123 @@ app.registerExtension({
 
       this.properties = this.properties || {};
       this.properties.url = this.properties.url || "";
-      this.properties.dest_dir = this.properties.dest_dir || "";
+      this.properties.dest_dir = normalizePath(this.properties.dest_dir || "");
       this.serialize_widgets = true;
 
-      // Inputs
+      // URL input
       this.addWidget("text", "URL", this.properties.url, v => this.properties.url = v ?? "");
-      this.addWidget("text", "Destination Folder", this.properties.dest_dir, v => this.properties.dest_dir = v ?? "");
 
-      // State
+      // ===== Destination input with custom dropdown =====
+      const container = document.createElement("div");
+      Object.assign(container.style,{ position:"relative", width:"100%" });
+
+      const destInput = document.createElement("input");
+      destInput.type="text";
+      destInput.placeholder="Destination folder (e.g. C:/Users/you/Downloads or ~/models)";
+      Object.assign(destInput.style,{
+        width:"100%", height:"26px", padding:"2px 8px",
+        border:"1px solid #444", borderRadius:"6px",
+        background:"var(--comfy-input-bg, #2a2a2a)", color:"#ddd",
+        boxSizing:"border-box", outline:"none"
+      });
+      destInput.value = this.properties.dest_dir;
+
+      const dropdown = document.createElement("div");
+      Object.assign(dropdown.style,{
+        position:"absolute", top:"100%", left:"0", right:"0",
+        background:"#222", border:"1px solid #555",
+        zIndex:"9999", display:"none", maxHeight:"180px",
+        overflowY:"auto", fontSize:"12px", borderRadius:"6px"
+      });
+
+      container.appendChild(destInput);
+      container.appendChild(dropdown);
+
+      const destWidget = this.addDOMWidget("dest_dir","Destination",container);
+      destWidget.computeSize = () => [this.size[0]-20, 34];
+
+      let items = [], active = -1, debounceTimer=null;
+
+      const renderDropdown = () => {
+        dropdown.innerHTML = "";
+        if (!items.length) { dropdown.style.display = "none"; active = -1; return; }
+
+        items.forEach((it, idx)=>{
+          const row = document.createElement("div");
+          row.textContent = it;
+          Object.assign(row.style,{
+            padding:"5px 8px", cursor:"pointer", whiteSpace:"nowrap",
+            background: idx===active ? "#444" : "transparent",
+            userSelect: "none"
+          });
+
+          row.onmouseenter = ()=>{ active = idx; renderDropdown(); };
+
+          const choose = () => {
+            const chosen = normalizePath(it);
+            destInput.value = chosen;
+            this.properties.dest_dir = chosen;
+            items = []; active = -1;
+            dropdown.style.display="none";
+          };
+          row.addEventListener("pointerdown", (e)=>{ e.preventDefault(); e.stopPropagation(); choose(); });
+          row.addEventListener("mousedown",   (e)=>{ e.preventDefault(); e.stopPropagation(); choose(); });
+
+          dropdown.appendChild(row);
+        });
+
+        dropdown.style.display = "block";
+      };
+
+      const scheduleFetch = () => {
+        if (debounceTimer) clearTimeout(debounceTimer);
+        debounceTimer = setTimeout(fetchSuggestions, 200);
+      };
+
+      const fetchSuggestions = async () => {
+        const raw = destInput.value.trim();
+        if (!raw) { items = []; renderDropdown(); return; }
+        const val = normalizePath(raw);
+        try{
+          const resp = await api.fetchApi(`/aria2/suggest?prefix=${encodeURIComponent(val)}`);
+          const data = await resp.json();
+          items = (data?.items)||[];
+          active = items.length ? 0 : -1;
+          renderDropdown();
+        }catch{ items = []; renderDropdown(); }
+      };
+
+      destInput.addEventListener("input", ()=>{
+        const prevStart = destInput.selectionStart;
+        const normalized = normalizePath(destInput.value);
+        if (normalized !== destInput.value) {
+          destInput.value = normalized;
+          destInput.setSelectionRange(prevStart, prevStart);
+        }
+        this.properties.dest_dir = normalized;
+        scheduleFetch();
+      });
+
+      destInput.addEventListener("focus", ()=>{ scheduleFetch(); });
+
+      destInput.addEventListener("keydown", (e)=>{
+        if (dropdown.style.display !== "block" || !items.length) return;
+        if (e.key === "ArrowDown") { e.preventDefault(); active = (active+1) % items.length; renderDropdown(); }
+        else if (e.key === "ArrowUp") { e.preventDefault(); active = (active-1+items.length) % items.length; renderDropdown(); }
+        else if (e.key === "Enter") {
+          if (active >= 0) {
+            e.preventDefault();
+            const chosen = normalizePath(items[active]);
+            destInput.value = chosen;
+            this.properties.dest_dir = chosen;
+            items = []; active = -1; dropdown.style.display="none";
+          }
+        } else if (e.key === "Escape") { dropdown.style.display="none"; items=[]; active=-1; }
+      });
+
+      destInput.addEventListener("blur", ()=>{ setTimeout(()=>{ dropdown.style.display="none"; }, 120); });
+
+      // ====== STATE ======
       this.gid = null;
       this._status = "Idle";
       this._progress = 0;
@@ -44,7 +155,7 @@ app.registerExtension({
       this._filename = "";
       this._filepath = "";
 
-      // Download button (no queue)
+      // ====== Download button ======
       this.addWidget("button", "Download", "Start", async () => {
         if (this.gid) return;
 
@@ -121,7 +232,7 @@ app.registerExtension({
         poll();
       });
 
-      // Canvas size & progress UI
+      // ====== Canvas drawing ======
       this.size = [460, 200];
       this.onDrawForeground = (ctx) => {
         const pad = 10;
@@ -129,7 +240,6 @@ app.registerExtension({
         const barH = 14;
         const yBar = this.size[1] - pad - barH - 4;
 
-        // Status
         ctx.font = "12px sans-serif";
         ctx.textAlign = "left";
         ctx.textBaseline = "bottom";
@@ -137,14 +247,12 @@ app.registerExtension({
         const meta = `Status: ${this._status}   •   Speed: ${fmtBytes(this._speed)}/s   •   ETA: ${fmtETA(this._eta)}`;
         ctx.fillText(meta, pad, yBar - 26);
 
-        // Filename/path
         if (this._filename || this._filepath) {
           const show = this._filepath || this._filename;
           ctx.fillStyle = "#8fa3b7";
           ctx.fillText(`Saved as: ${show}`, pad, yBar - 10);
         }
 
-        // Bar outline
         const radius = 7;
         ctx.lineWidth = 1; ctx.strokeStyle = "#666";
         ctx.beginPath();
@@ -160,7 +268,6 @@ app.registerExtension({
         ctx.closePath();
         ctx.stroke();
 
-        // Fill
         const pct = Math.max(0, Math.min(100, this._progress || 0));
         const fillW = Math.round((w * pct) / 100);
         ctx.save();
@@ -173,7 +280,6 @@ app.registerExtension({
         ctx.fill();
         ctx.restore();
 
-        // % label
         ctx.font = "12px sans-serif";
         ctx.textAlign = "center";
         ctx.textBaseline = "middle";
@@ -181,7 +287,6 @@ app.registerExtension({
         ctx.fillText(`${pct.toFixed(0)}%`, pad + w / 2, yBar + barH / 2);
       };
 
-      // Cleanup
       const oldRemoved = this.onRemoved;
       this.onRemoved = function () {
         if (this._pollTimer) clearTimeout(this._pollTimer);
