@@ -49,7 +49,7 @@ app.registerExtension({
 
       // Inputs
       this.addWidget("text", "URL", this.properties.url, v => this.properties.url = v ?? "");
-      this.addWidget("text", "Destination Folder", this.properties.dest_dir, v => this.properties.dest_dir = v ?? "");
+      //this.addWidget("text", "Destination Folder", this.properties.dest_dir, v => this.properties.dest_dir = v ?? "");
 
       // State
       this.gid = null;
@@ -209,5 +209,6 @@ app.registerExtension({
     };
   },
 });
+
 
 
