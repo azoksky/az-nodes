@@ -30,6 +30,20 @@ app.registerExtension({
       this.properties.dest_dir = this.properties.dest_dir || "";
       this.serialize_widgets = true;
 
+      const container = document.createElement("div");
+      Object.assign(container.style,{ position:"relative", width:"100%" });
+
+      const destInput = document.createElement("input");
+      destInput.type="text";
+      destInput.placeholder="Destination folder (e.g. C:/Users/you/Downloads or ~/models)";
+      Object.assign(destInput.style,{
+        width:"100%", height:"26px", padding:"2px 8px",
+        border:"1px solid #444", borderRadius:"6px",
+        background:"var(--comfy-input-bg, #2a2a2a)", color:"#ddd",
+        boxSizing:"border-box", outline:"none"
+      });
+      container.appendChild(destInput);
+
       // Inputs
       this.addWidget("text", "URL", this.properties.url, v => this.properties.url = v ?? "");
       this.addWidget("text", "Destination Folder", this.properties.dest_dir, v => this.properties.dest_dir = v ?? "");
@@ -192,3 +206,4 @@ app.registerExtension({
     };
   },
 });
+
