@@ -1,310 +1,296 @@
-# -*- coding: utf-8 -*-
-import os
-import re
-import json
-import time
-import shutil
-import urllib.request
-import urllib.parse
-from urllib.parse import urlparse, urlunparse
-from uuid import uuid4
-from subprocess import Popen, DEVNULL
+// Path Uploader UI: destination path with dropdown (type-ahead), validations,
+// upload progress (speed + ETA), cancel button.
+import { app } from "../../scripts/app.js";
+import { api } from "../../scripts/api.js";
 
-from aiohttp import web
-from server import PromptServer
+function fmtBytes(b) {
+  if (!b || b <= 0) return "0 B";
+  const u = ["B","KB","MB","GB","TB"];
+  const i = Math.floor(Math.log(b)/Math.log(1024));
+  return (b/Math.pow(1024,i)).toFixed(i?1:0) + " " + u[i];
+}
+function fmtETA(s) {
+  if (s == null) return "—";
+  const h = Math.floor(s/3600), m = Math.floor((s%3600)/60), sec = Math.floor(s%60);
+  if (h) return `${h}h ${m}m ${sec}s`;
+  if (m) return `${m}m ${sec}s`;
+  return `${sec}s`;
+}
+function joinPath(base, seg, sep) {
+  if (!base) return seg;
+  if (!seg) return base;
+  const trailing = base.endsWith("\\") || base.endsWith("/");
+  return trailing ? base + seg : base + (sep || "/") + seg;
+}
 
-# ========= Config =========
-ARIA2_SECRET = os.environ.get("COMFY_ARIA2_SECRET", "comfyui_aria2_secret")
-ARIA2_RPC_URL = os.environ.get("COMFY_ARIA2_RPC", "http://127.0.0.1:6800/jsonrpc")
-ARIA2_BIN = shutil.which("aria2c") or "aria2c"
-RPC_START_ARGS = [
-    ARIA2_BIN,
-    "--enable-rpc=true",
-    "--rpc-listen-all=false",
-    f"--rpc-secret={ARIA2_SECRET}",
-    "--daemon=true",
-    "--console-log-level=error",
-    "--disable-ipv6=true",
-]
+app.registerExtension({
+  name: "az.path.uploader",
+  beforeRegisterNodeDef(nodeType, nodeData) {
+    if (nodeData?.name !== "PathUploader") return;
 
-# ========= RPC helper =========
-def _aria2_rpc(method, params=None):
-    payload = {
-        "jsonrpc": "2.0",
-        "id": str(uuid4()),
-        "method": f"aria2.{method}",
-        "params": [f"token:{ARIA2_SECRET}"] + (params or []),
-    }
-    data = json.dumps(payload).encode("utf-8")
-    req = urllib.request.Request(
-        ARIA2_RPC_URL, data=data, headers={"Content-Type": "application/json"}
-    )
-    with urllib.request.urlopen(req, timeout=10) as resp:
-        return json.loads(resp.read().decode("utf-8"))
+    const orig = nodeType.prototype.onNodeCreated;
+    nodeType.prototype.onNodeCreated = function () {
+      const r = orig ? orig.apply(this, arguments) : undefined;
 
-def _ensure_aria2_daemon():
-    try:
-        _aria2_rpc("getVersion")
-        return
-    except Exception:
-        pass
-    if not shutil.which(ARIA2_BIN):
-        raise RuntimeError("aria2c not found in PATH. Please install aria2c.")
-    Popen(RPC_START_ARGS, stdout=DEVNULL, stderr=DEVNULL)
-    t0 = time.time()
-    while time.time() - t0 < 3.0:
-        try:
-            _aria2_rpc("getVersion")
-            return
-        except Exception:
-            time.sleep(0.15)
-    _aria2_rpc("getVersion")  # raise if still not up
+      // ---- persistent model ----
+      this.properties = this.properties || {};
+      this.properties.dest_dir = this.properties.dest_dir || "";
 
-# ========= Filename helpers =========
-_SANITIZE_RE = re.compile(r'[\\/:*?"<>|\x00-\x1F]')
+      // ---- transient state ----
+      this._status = "Idle";
+      this._progress = 0;
+      this._speed = 0;
+      this._eta = null;
+      this._sent = 0;
+      this._total = 0;
+      this._savedPath = "";
+      this._filename = "";
+      this._xhr = null;
+      this._selectedFile = null;
+      this._tPrev = 0;
+      this._sentPrev = 0;
 
-def _sanitize_filename(name: str) -> str:
-    return _SANITIZE_RE.sub("_", name).strip()
+      // ---- DESTINATION: input + dropdown list ----
+      const destInput = document.createElement("input");
+      destInput.type = "text";
+      destInput.placeholder = "Destination Folder (e.g., C:/Users/you/Downloads or ~/models)";
+      destInput.style.width = "100%";
 
-def _safe_expand(path_str: str) -> str:
-    return os.path.abspath(os.path.expanduser(path_str or ""))
+      const list = document.createElement("datalist");
+      const listId = "az-dir-list-" + Math.floor(Math.random() * 1e9);
+      list.id = listId;
+      destInput.setAttribute("list", listId);
 
-def _parse_cd_filename(cd: str) -> str | None:
-    if not cd:
-        return None
-    # RFC 5987: filename*=UTF-8''percent-encoded
-    m = re.search(r'filename\*\s*=\s*[^\'";]+\'' + r"'" + r'([^;]+)', cd, flags=re.IGNORECASE)
-    if m:
-        try:
-            decoded = urllib.parse.unquote(m.group(1))
-            n = _sanitize_filename(os.path.basename(decoded))
-            return n or None
-        except Exception:
-            pass
-    # filename="name"
-    m = re.search(r'filename\s*=\s*"([^"]+)"', cd, flags=re.IGNORECASE)
-    if m:
-        n = _sanitize_filename(os.path.basename(m.group(1)))
-        return n or None
-    # filename=name
-    m = re.search(r'filename\s*=\s*([^;]+)', cd, flags=re.IGNORECASE)
-    if m:
-        n = _sanitize_filename(os.path.basename(m.group(1).strip()))
-        return n or None
-    return None
+      // seed with existing value
+      destInput.value = this.properties.dest_dir || "";
 
-def _origin_from_url(u: str) -> str:
-    try:
-        p = urlparse(u)
-        return urlunparse((p.scheme, p.netloc, "/", "", "", ""))
-    except Exception:
-        return ""
+      // debounce fetch
+      let listdirTimer = null;
+      const scheduleListdir = () => {
+        if (listdirTimer) clearTimeout(listdirTimer);
+        listdirTimer = setTimeout(fetchChildren, 200);
+      };
 
-def _extract_query_filename(u: str) -> str | None:
-    """Common patterns used by CDNs: ?filename=, ?response-content-disposition=attachment;filename=..."""
-    try:
-        q = urllib.parse.parse_qs(urlparse(u).query)
-        # direct filename param
-        for key in ("filename", "file", "name", "response-content-disposition"):
-            if key in q and q[key]:
-                candidate = q[key][0]
-                # if response-content-disposition is passed through, parse it
-                if key == "response-content-disposition":
-                    n = _parse_cd_filename(candidate)
-                    if n:
-                        return n
-                n = _sanitize_filename(os.path.basename(candidate))
-                if n:
-                    return n
-    except Exception:
-        pass
-    return None
+      const fetchChildren = async () => {
+        const val = destInput.value.trim();
+        if (!val) { list.innerHTML = ""; return; }
+        try {
+          const resp = await api.fetchApi(`/az/listdir?path=${encodeURIComponent(val)}`);
+          const data = await resp.json();
+          list.innerHTML = "";
+          if (data?.ok && data.folders?.length) {
+            const sep = data.sep || "/";
+            for (const folder of data.folders) {
+              const full = joinPath(data.root || val, folder.name, sep);
+              const opt = document.createElement("option");
+              opt.value = full;
+              opt.label = folder.name;
+              list.appendChild(opt);
+            }
+          }
+        } catch (e) {
+          // silent fail; keep prior list
+          console.warn("listdir failed", e);
+        }
+      };
 
-def _head_follow(url: str, max_redirects: int = 5):
-    """HEAD first; if disallowed, try GET without reading body."""
-    opener = urllib.request.build_opener()
-    req = urllib.request.Request(url, method="HEAD")
-    try:
-        return opener.open(req, timeout=10)
-    except urllib.error.HTTPError as e:
-        if e.code in (403, 405):
-            req_get = urllib.request.Request(url, method="GET")
-            return opener.open(req_get, timeout=10)
-        raise
+      destInput.addEventListener("input", () => {
+        this.properties.dest_dir = destInput.value;
+        scheduleListdir();
+      });
+      destInput.addEventListener("change", () => {
+        this.properties.dest_dir = destInput.value;
+        scheduleListdir();
+      });
 
-def _smart_guess_filename(url: str) -> tuple[str | None, bool]:
-    """
-    Returns (name, confident).
-    confident=True only when derived from Content-Disposition or explicit query filename.
-    """
-    # 1) Query param hints
-    qn = _extract_query_filename(url)
-    if qn:
-        return (qn, True)
+      const destWidget = this.addDOMWidget("dest_dir", "Destination Folder", destInput);
+      destWidget.inputEl = destInput;
+      destInput.after(list);
 
-    # 2) HEAD/GET headers
-    try:
-        resp = _head_follow(url)
-        cd = resp.headers.get("Content-Disposition") or resp.headers.get("content-disposition")
-        n = _parse_cd_filename(cd) if cd else None
-        if n:
-            return (n, True)
-    except Exception:
-        pass
+      // ---- FILE PICKER ----
+      this.addWidget("button", "Choose File", "Browse…", () => {
+        const picker = document.createElement("input");
+        picker.type = "file";
+        picker.onchange = () => {
+          if (!picker.files || !picker.files[0]) return;
+          const f = picker.files[0];
+          this._selectedFile = f;
+          this._filename = f.name;
+          this._total = f.size;
+          this._sent = 0;
+          this._progress = 0;
+          this._status = "Ready";
+          this._savedPath = "";
+          this.setDirtyCanvas(true);
+        };
+        picker.click();
+      });
 
-    # 3) URL path (not confident; let aria2 decide if possible)
-    try:
-        path_name = os.path.basename(urlparse(url).path)
-        path_name = _sanitize_filename(path_name)
-        if path_name:
-            return (path_name, False)
-    except Exception:
-        pass
-    return (None, False)
+      // ---- UPLOAD ----
+      this.addWidget("button", "Upload", "Start", async () => {
+        // validations
+        if (!this._selectedFile) {
+          this._status = "Please select a file first.";
+          this.setDirtyCanvas(true);
+          return;
+        }
+        const dest = (this.properties.dest_dir || "").trim();
+        if (!dest) {
+          this._status = "Please enter destination folder.";
+          this.setDirtyCanvas(true);
+          return;
+        }
+        if (this._xhr) return; // already uploading
 
-def _eta(total_len, done_len, speed):
-    try:
-        total = int(total_len); done = int(done_len); spd = max(int(speed), 1)
-        remain = max(total - done, 0)
-        return remain // spd
-    except Exception:
-        return None
+        const form = new FormData();
+        form.append("file", this._selectedFile, this._selectedFile.name);
+        form.append("dest_dir", dest);
 
-# ========= API =========
-@PromptServer.instance.routes.post("/aria2/start")
-async def aria2_start(request):
-    body = await request.json()
-    url = (body.get("url") or "").strip()
-    dest_dir = _safe_expand(body.get("dest_dir") or os.getcwd())
+        const xhr = new XMLHttpRequest();
+        this._xhr = xhr;
+        this._status = "Uploading…";
+        this._progress = 0;
+        this._sent = 0;
+        this._savedPath = "";
+        this._speed = 0;
+        this._eta = null;
+        this._tPrev = performance.now();
+        this._sentPrev = 0;
+        this.setDirtyCanvas(true);
 
-    if not url:
-        return web.json_response({"error": "URL is required."}, status=400)
+        xhr.upload.onprogress = (e) => {
+          if (e.lengthComputable) {
+            this._sent = e.loaded;
+            this._total = e.total;
+            this._progress = Math.max(0, Math.min(100, (e.loaded / e.total) * 100));
+          } else {
+            // fallback update
+            this._sent = e.loaded || this._sent;
+            this._progress = this._total ? (this._sent / this._total) * 100 : this._progress;
+          }
+          const tNow = performance.now();
+          const dt = (tNow - this._tPrev) / 1000;
+          if (dt > 0.25) {
+            const dBytes = this._sent - this._sentPrev;
+            this._speed = dBytes / dt;
+            const remain = Math.max(this._total - this._sent, 0);
+            this._eta = this._speed > 0 ? Math.floor(remain / this._speed) : null;
+            this._tPrev = tNow;
+            this._sentPrev = this._sent;
+          }
+          this.setDirtyCanvas(true);
+        };
 
-    try:
-        os.makedirs(dest_dir, exist_ok=True)
-    except Exception as e:
-        return web.json_response({"error": f"Cannot access destination: {e}"}, status=400)
+        xhr.onreadystatechange = () => {
+          if (xhr.readyState === 4) {
+            let data = null;
+            try { data = JSON.parse(xhr.responseText || "{}"); } catch {}
+            if (xhr.status >= 200 && xhr.status < 300 && data?.ok) {
+              this._status = "Complete";
+              this._savedPath = data.path || "";
+              this._progress = 100;
+            } else {
+              const err = (data && (data.error || data.message)) || `HTTP ${xhr.status}`;
+              this._status = `Error: ${err}`;
+            }
+            this._xhr = null;
+            this.setDirtyCanvas(true);
+          }
+        };
 
-    if not os.path.isdir(dest_dir) or not os.access(dest_dir, os.W_OK):
-        return web.json_response({"error": f"Destination not writable: {dest_dir}"}, status=400)
+        xhr.onerror = () => {
+          this._status = "Network error";
+          this._xhr = null;
+          this.setDirtyCanvas(true);
+        };
 
-    try:
-        _ensure_aria2_daemon()
-    except Exception as e:
-        return web.json_response({"error": str(e)}, status=500)
+        xhr.open("POST", "/az/upload", true);
+        xhr.send(form);
+      });
 
-    guessed_name, confident = _smart_guess_filename(url)
+      // ---- CANCEL ----
+      this.addWidget("button", "Cancel", "Stop", () => {
+        if (this._xhr) {
+          this._xhr.abort();
+          this._xhr = null;
+          this._status = "Canceled";
+          this.setDirtyCanvas(true);
+        }
+      });
 
-    # Map CLI options and add browser-like headers to coax proper CD filename
-    # NOTE: we set "out" ONLY if confident; otherwise we let aria2 use server-provided name.
-    opts = {
-        "continue": "true",
-        "max-connection-per-server": "16",
-        "split": "16",
-        "dir": dest_dir,
-        "auto-file-renaming": "true",
-        "remote-time": "true",
-        "content-disposition-default-utf8": "true",
-        "header": [
-            "Accept: */*",
-            "Accept-Language: en-US,en;q=0.9",
-            "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-            "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
-        ],
-        "max-tries": "5",
-    }
-    # Add Referer to mimic browser navigation when possible
-    origin = _origin_from_url(url)
-    if origin:
-        opts["referer"] = origin
+      // ---- draw ----
+      this.size = [500, 210];
+      this.onDrawForeground = (ctx) => {
+        const pad = 10;
+        const w = this.size[0] - pad * 2;
+        const barH = 14;
+        const yBar = this.size[1] - pad - barH - 4;
 
-    if confident and guessed_name:
-        opts["out"] = guessed_name
+        // Status
+        ctx.font = "12px sans-serif";
+        ctx.textAlign = "left";
+        ctx.textBaseline = "bottom";
+        ctx.fillStyle = "#bbb";
+        const meta = `Status: ${this._status}   •   Speed: ${fmtBytes(this._speed)}/s   •   ETA: ${fmtETA(this._eta)}`;
+        ctx.fillText(meta, pad, yBar - 28);
 
-    try:
-        res = _aria2_rpc("addUri", [[url], opts])
-        gid = res.get("result")
-        if not gid:
-            return web.json_response({"error": "aria2c did not return a gid."}, status=500)
-        return web.json_response({
-            "gid": gid,
-            "dest_dir": dest_dir,
-            "guessed_out": opts.get("out", "") or "",
-            "confident": bool(confident),
-        })
-    except Exception as e:
-        return web.json_response({"error": f"aria2c RPC error: {e}"}, status=500)
+        // File name + size
+        if (this._filename) {
+          ctx.fillStyle = "#8fa3b7";
+          ctx.fillText(`File: ${this._filename} (${fmtBytes(this._total)})`, pad, yBar - 12);
+        }
 
-@PromptServer.instance.routes.get("/aria2/status")
-async def aria2_status(request):
-    gid = request.query.get("gid", "")
-    if not gid:
-        return web.json_response({"error": "gid is required."}, status=400)
+        // Saved path (when known)
+        if (this._savedPath) {
+          ctx.fillStyle = "#9bc27c";
+          ctx.fillText(`Saved: ${this._savedPath}`, pad, yBar - 44);
+        }
 
-    try:
-        res = _aria2_rpc("tellStatus", [gid, [
-            "status", "totalLength", "completedLength", "downloadSpeed",
-            "errorMessage", "files", "dir"
-        ]])
-        st = res.get("result", {})
-    except Exception as e:
-        return web.json_response({"error": f"aria2c RPC error: {e}"}, status=500)
+        // Progress outline
+        const radius = 7;
+        ctx.lineWidth = 1; ctx.strokeStyle = "#666";
+        ctx.beginPath();
+        ctx.moveTo(pad + radius, yBar);
+        ctx.lineTo(pad + w - radius, yBar);
+        ctx.quadraticCurveTo(pad + w, yBar, pad + w, yBar + radius);
+        ctx.lineTo(pad + w, yBar + barH - radius);
+        ctx.quadraticCurveTo(pad + w, yBar + barH, pad + w - radius, yBar + barH);
+        ctx.lineTo(pad + radius, yBar + barH);
+        ctx.quadraticCurveTo(pad, yBar + barH, pad, yBar + barH - radius);
+        ctx.lineTo(pad, yBar + radius);
+        ctx.quadraticCurveTo(pad, yBar, pad + radius, yBar);
+        ctx.closePath();
+        ctx.stroke();
 
-    status = st.get("status", "unknown")
-    total = int(st.get("totalLength", "0") or "0")
-    done = int(st.get("completedLength", "0") or "0")
-    speed = int(st.get("downloadSpeed", "0") or "0")
-    percent = (done / total * 100.0) if total > 0 else (100.0 if status == "complete" else 0.0)
+        // Fill
+        const pct = Math.max(0, Math.min(100, this._progress || 0));
+        const fillW = Math.round((w * pct) / 100);
+        ctx.save();
+        ctx.beginPath();
+        ctx.rect(pad + 1, yBar + 1, Math.max(0, fillW - 2), barH - 2);
+        const g = ctx.createLinearGradient(pad, yBar, pad, yBar + barH);
+        g.addColorStop(0, "#9ec7ff");
+        g.addColorStop(1, "#4b90ff");
+        ctx.fillStyle = g;
+        ctx.fill();
+        ctx.restore();
 
-    filepath = ""
-    filename = ""
-    try:
-        files = st.get("files") or []
-        if files:
-            fp = files[0].get("path") or ""
-            if fp:
-                filepath = fp
-                filename = os.path.basename(fp)
-        if not filepath and st.get("dir") and filename:
-            filepath = os.path.join(st["dir"], filename)
-    except Exception:
-        pass
+        // % label
+        ctx.font = "12px sans-serif";
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+        ctx.fillStyle = "#111";
+        ctx.fillText(`${pct.toFixed(0)}%`, pad + w / 2, yBar + barH / 2);
+      };
 
-    out = {
-        "status": status,
-        "percent": round(percent, 2),
-        "completedLength": done,
-        "totalLength": total,
-        "downloadSpeed": speed,
-        "eta": _eta(total, done, speed),
-        "filename": filename,
-        "filepath": filepath,
-    }
-    if status == "error":
-        out["error"] = st.get("errorMessage", "unknown error")
-    return web.json_response(out)
+      // Kick initial suggestions if a value was prefilled
+      if (destInput.value) {
+        setTimeout(() => {
+          destInput.dispatchEvent(new Event("input"));
+        }, 50);
+      }
 
-@PromptServer.instance.routes.post("/aria2/stop")
-async def aria2_stop(request):
-    body = await request.json()
-    gid = (body.get("gid") or "").strip()
-    if not gid:
-        return web.json_response({"error": "gid is required."}, status=400)
-    try:
-        _aria2_rpc("remove", [gid])
-        return web.json_response({"ok": True})
-    except Exception as e:
-        return web.json_response({"error": f"aria2c RPC error: {e}"}, status=500)
-
-# ========= UI-only node =========
-class Aria2Downloader:
-    @classmethod
-    def INPUT_TYPES(cls):
-        return {"required": {}}  # no backend auto-widgets
-
-    RETURN_TYPES = ()
-    FUNCTION = "noop"
-    CATEGORY = "AZ_Nodes"
-
-    def noop(self):
-        return ()
+      return r;
+    };
+  },
+});
