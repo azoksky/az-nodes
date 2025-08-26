@@ -43,6 +43,9 @@ app.registerExtension({
         boxSizing:"border-box", outline:"none"
       });
       container.appendChild(destInput);
+      const destWidget = this.addDOMWidget("dest_dir","Destination",container);
+      // compact row
+      destWidget.computeSize = () => [this.size[0]-20, 34];
 
       // Inputs
       this.addWidget("text", "URL", this.properties.url, v => this.properties.url = v ?? "");
@@ -206,4 +209,5 @@ app.registerExtension({
     };
   },
 });
+
 
