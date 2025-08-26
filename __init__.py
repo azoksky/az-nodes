@@ -2,11 +2,13 @@
 #from .generate_clip_prompt_node import GenerateCLIPPromptNode
 from .extra_node import AzInput, OverrideCLIPDevice, FluxResolutionNode, GetImageSizeRatio, OverrideVAEDevice, OverrideMODELDevice,PurgeVRAM, PurgeVRAM_V2, AnyType
 from .path_uploader import UploadToAnyPath, add_routes
+from .Downloader_helper import Aria2Downloader
 
 
 
 NODE_CLASS_MAPPINGS = {
     #"GenerateCLIPPromptNode": GenerateCLIPPromptNode,
+    "Aria2Downloader": Aria2Downloader,
     "AzInput": AzInput,
     "OverrideCLIPDevice": OverrideCLIPDevice,
     "OverrideVAEDevice": OverrideVAEDevice,
@@ -20,6 +22,7 @@ NODE_CLASS_MAPPINGS = {
 
 NODE_DISPLAY_NAME_MAPPINGS = {
     # "GenerateCLIPPromptNode": "Generate CLIP Prompt",
+    "Aria2Downloader": "Aria2 Downloader",
     "AzInput": "Input String",
     "OverrideCLIPDevice": "Force/Set CLIP Device",
     "OverrideVAEDevice": "Force/Set VAE Device",
