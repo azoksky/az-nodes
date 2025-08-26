@@ -68,7 +68,6 @@ app.registerExtension({
       placeholder: "Repository ID (e.g. runwayml/stable-diffusion-v1-5)",
       style: { width: "100%", padding: "4px", boxSizing: "border-box" }
     });
-    
 
     const fileInput = el("input", {
       type: "text",
@@ -82,31 +81,30 @@ app.registerExtension({
       style: { width: "100%", padding: "4px", boxSizing: "border-box" }
     });
 
-
-
     const destInput = el("input", {
       type: "text",
       placeholder: "Destination folder (e.g. ./models)",
       style: { width: "100%", padding: "4px", boxSizing: "border-box" }
     });
 
+    // Inline dropdown (between destInput and progress bar)
     const dropdown = el("div", {
       style: {
-    background: "#222",
-    border: "1px solid #555",
-    display: "none",
-    maxHeight: "200px",
-    overflowY: "auto",
-    fontSize: "12px",
-    borderRadius: "6px",
-    boxShadow: "0 8px 16px rgba(0,0,0,.35)",
-    marginTop: "2px",
-    width: "100%"
-  }
-});
-    wrap.append(repoInput, tokenInput, fileInput, destInput, dropdown);
+        background: "#222",
+        border: "1px solid #555",
+        display: "none",
+        maxHeight: "200px",
+        overflowY: "auto",
+        fontSize: "12px",
+        borderRadius: "6px",
+        boxShadow: "0 8px 16px rgba(0,0,0,.35)",
+        marginTop: "2px",
+        width: "100%"
+      }
+    });
 
-    
+    // Append inputs (dropdown is right after destInput)
+    wrap.append(repoInput, tokenInput, fileInput, destInput, dropdown);
 
     // Indeterminate progress bar
     const progressTrack = el("div", { className: "hf-track", style: { display: "none" } });
@@ -125,115 +123,146 @@ app.registerExtension({
 
     wrap.append(progressTrack, statusText, buttonRow);
 
+    // ================= folder autocomplete logic =================
     let items = [];
     let active = -1;
     let debounceTimer = null;
     const normalizePath = (p) => (p || "").replace(/\\/g, "/").replace(/\/{2,}/g, "/");
     const joinPath = (a, b) => normalizePath((a?.endsWith("/") ? a : a + "/") + (b || ""));
-    const renderDropdown = () => {
-  dropdown.innerHTML = "";
-  if (!items.length) { dropdown.style.display = "none"; active = -1; return; }
 
-  items.forEach((it, idx) => {
-    const row = document.createElement("div");
-    row.textContent = it.name;
-    Object.assign(row.style, {
-      padding: "6px 10px",
-      cursor: "pointer",
-      whiteSpace: "nowrap",
-      background: idx === active ? "#444" : "transparent",
-      userSelect: "none"
-    });
-
-    row.onmouseenter = () => { active = idx; renderDropdown(); };
-    const choose = () => {
-      const chosen = normalizePath(it.path);
-      destInput.value = chosen;
-      node.properties.dest_dir = chosen;
-      items = []; active = -1;
-      dropdown.style.display = "none";
-      scheduleFetch();
+    // Reflow helper so dropdown can expand the node
+    const reflow = () => {
+      const targetH = Math.max(MIN_H, wrap.scrollHeight);
+      if (node.size[1] !== targetH) node.size[1] = targetH;
+      if (node?.graph?.setDirtyCanvas) node.graph.setDirtyCanvas(true, true);
     };
-    row.addEventListener("pointerdown", (e)=>{ e.preventDefault(); choose(); });
-    row.addEventListener("mousedown",   (e)=>{ e.preventDefault(); choose(); });
 
-    dropdown.appendChild(row);
-  });
+    const renderDropdown = () => {
+      dropdown.innerHTML = "";
+      if (!items.length) {
+        dropdown.style.display = "none";
+        active = -1;
+        reflow();
+        return;
+      }
 
-  dropdown.style.display = "block";
-};
+      items.forEach((it, idx) => {
+        const row = document.createElement("div");
+        row.textContent = it.name;
+        Object.assign(row.style, {
+          padding: "6px 10px",
+          cursor: "pointer",
+          whiteSpace: "nowrap",
+          background: idx === active ? "#444" : "transparent",
+          userSelect: "none"
+        });
+
+        row.onmouseenter = () => { active = idx; renderDropdown(); };
+
+        const choose = () => {
+          const chosen = normalizePath(it.path);
+          destInput.value = chosen;
+          node.properties.dest_dir = chosen;
+          items = []; active = -1;
+          dropdown.style.display = "none";
+          reflow();
+          scheduleFetch(); // show next level (children) immediately
+        };
+
+        // pointerdown fires before blur; keep focus
+        row.addEventListener("pointerdown", (e)=>{ e.preventDefault(); choose(); });
+        row.addEventListener("mousedown",   (e)=>{ e.preventDefault(); choose(); });
+
+        dropdown.appendChild(row);
+      });
+
+      dropdown.style.display = "block";
+      reflow();
+    };
 
     const scheduleFetch = () => {
-  if (debounceTimer) clearTimeout(debounceTimer);
-  debounceTimer = setTimeout(fetchChildren, 180);
-};
+      if (debounceTimer) clearTimeout(debounceTimer);
+      debounceTimer = setTimeout(fetchChildren, 180);
+    };
+
     async function fetchChildren() {
-  const raw = destInput.value.trim();
-  if (!raw) { items = []; renderDropdown(); return; }
-  const val = normalizePath(raw);
-  try {
-    const resp = await api.fetchApi(`/az/listdir?path=${encodeURIComponent(val)}`);
-    const data = await resp.json();
-    if (data?.ok && Array.isArray(data.folders)) {
-      items = data.folders.map(f => ({
-        name: f.name,
-        path: joinPath(data.root || val, f.name)
-      }));
-    } else {
-      items = [];
+      const raw = destInput.value.trim();
+      if (!raw) { items = []; renderDropdown(); return; }
+      const val = normalizePath(raw);
+      try {
+        const resp = await api.fetchApi(`/az/listdir?path=${encodeURIComponent(val)}`);
+        const data = await resp.json();
+        if (data?.ok && Array.isArray(data.folders)) {
+          items = data.folders.map(f => ({
+            name: f.name,
+            path: joinPath(data.root || val, f.name)
+          }));
+        } else {
+          items = [];
+        }
+        active = items.length ? 0 : -1;
+        renderDropdown();
+      } catch {
+        items = [];
+        renderDropdown();
+      }
     }
-    active = items.length ? 0 : -1;
-    renderDropdown();
-  } catch {
-    items = [];
-    renderDropdown();
-  }
-}
+
+    // typing
     destInput.addEventListener("input", () => {
-  const raw = destInput.value;
-  const prevStart = destInput.selectionStart;
-  const normalized = normalizePath(raw);
-  if (normalized !== raw) {
-    const delta = normalized.length - raw.length;
-    destInput.value = normalized;
-    const pos = Math.max(0, (prevStart||0) + delta);
-    destInput.setSelectionRange(pos, pos);
-  }
-  node.properties.dest_dir = normalized;
-  scheduleFetch();
-});
-    
+      const raw = destInput.value;
+      const prevStart = destInput.selectionStart;
+      const normalized = normalizePath(raw);
+      if (normalized !== raw) {
+        const delta = normalized.length - raw.length;
+        destInput.value = normalized;
+        const pos = Math.max(0, (prevStart||0) + delta);
+        destInput.setSelectionRange(pos, pos);
+      }
+      node.properties.dest_dir = normalized;
+      scheduleFetch();
+    });
+
     destInput.addEventListener("focus", () => scheduleFetch());
+
+    // keyboard nav
     destInput.addEventListener("keydown", (e) => {
-  if (dropdown.style.display !== "block" || !items.length) return;
-  if (e.key === "ArrowDown") { e.preventDefault(); active = (active+1) % items.length; renderDropdown(); }
-  else if (e.key === "ArrowUp") { e.preventDefault(); active = (active-1+items.length) % items.length; renderDropdown(); }
-  else if (e.key === "Enter" && active >= 0) {
-    e.preventDefault();
-    const it = items[active];
-    destInput.value = normalizePath(it.path);
-    node.properties.dest_dir = destInput.value;
-    items = []; active = -1; dropdown.style.display = "none";
-    scheduleFetch();
-  } else if (e.key === "Escape") {
-    dropdown.style.display = "none"; items=[]; active=-1;
-  }
-});
-    destInput.addEventListener("blur", () => setTimeout(()=> dropdown.style.display="none", 120));
+      if (dropdown.style.display !== "block" || !items.length) return;
+      if (e.key === "ArrowDown") { e.preventDefault(); active = (active+1) % items.length; renderDropdown(); }
+      else if (e.key === "ArrowUp") { e.preventDefault(); active = (active-1+items.length) % items.length; renderDropdown(); }
+      else if (e.key === "Enter" && active >= 0) {
+        e.preventDefault();
+        const it = items[active];
+        destInput.value = normalizePath(it.path);
+        node.properties.dest_dir = destInput.value;
+        items = []; active = -1; dropdown.style.display = "none";
+        reflow();
+        scheduleFetch();
+      } else if (e.key === "Escape") {
+        dropdown.style.display = "none"; items=[]; active=-1; reflow();
+      }
+    });
 
-    
+    // hide on blur
+    destInput.addEventListener("blur", () => setTimeout(()=> { dropdown.style.display="none"; reflow(); }, 120));
 
-    // Add DOM widget with fixed min height
+    // ====== Add DOM widget (dynamic height so dropdown can expand) ======
     const MIN_W = 460;
     const MIN_H = 230;
-    node.addDOMWidget("hf_downloader", "dom", wrap, {
+    const widget = node.addDOMWidget("hf_downloader", "dom", wrap, {
       serialize: false,
       hideOnZoom: false,
       getMinHeight: () => MIN_H
     });
 
-    // ====== Size fixes ======
-    const MAX_H = 300;
+    // Let widget height reflect actual content
+    widget.computeSize = (w) => {
+      const h = Math.max(MIN_H, wrap.scrollHeight);
+      return [ (w ?? (node.size?.[0] || MIN_W)) - 20, h ];
+    };
+
+    // ====== Size fixes (relax max clamp so dropdown can show) ======
+    const MAX_H = 1200; // allow growth
     node.size = [
       Math.max(node.size?.[0] || MIN_W, MIN_W),
       Math.max(node.size?.[1] || MIN_H, MIN_H),
@@ -241,7 +270,8 @@ app.registerExtension({
     const prevOnResize = node.onResize;
     node.onResize = function() {
       this.size[0] = Math.max(this.size[0], MIN_W);
-      this.size[1] = Math.min(Math.max(this.size[1], MIN_H), MAX_H);
+      // allow growth; only enforce minimum
+      this.size[1] = Math.max(this.size[1], MIN_H);
       if (prevOnResize) prevOnResize.apply(this, arguments);
     };
 
@@ -251,7 +281,8 @@ app.registerExtension({
     node._pollCount = 0;
 
     function showBar(on) {
-      progressTrack.style.display = on ? "block" : "none"; // force block
+      progressTrack.style.display = on ? "block" : "none";
+      reflow();
     }
     function setButtons(running) {
       downloadBtn.disabled = !!running;
@@ -270,6 +301,7 @@ app.registerExtension({
       node.gid = null;
       stopPolling();
       node._pollCount = 0;
+      reflow();
     }
 
     function startPolling() {
@@ -339,7 +371,7 @@ app.registerExtension({
         const res = await fetch("/hf/start", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ repo_id, filename, dest_dir, token_input,})
+          body: JSON.stringify({ repo_id, filename, dest_dir, token_input })
         });
         if (!res.ok) throw new Error(`Start ${res.status}`);
         const out = await res.json();
