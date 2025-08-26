@@ -87,9 +87,10 @@ app.registerExtension({
       style: { width: "100%", padding: "4px", boxSizing: "border-box" }
     });
 
-    // Inline dropdown (between destInput and progress bar)
+    // === Dropdown overlay anchored to destInput (append to body, not inside wrap) ===
     const dropdown = el("div", {
       style: {
+        position: "fixed",
         background: "#222",
         border: "1px solid #555",
         display: "none",
@@ -98,13 +99,22 @@ app.registerExtension({
         fontSize: "12px",
         borderRadius: "6px",
         boxShadow: "0 8px 16px rgba(0,0,0,.35)",
-        marginTop: "2px",
-        width: "100%"
+        zIndex: "999999",
+        minWidth: "180px"
       }
     });
+    document.body.appendChild(dropdown);
 
-    // Append inputs (dropdown is right after destInput)
-    wrap.append(repoInput, tokenInput, fileInput, destInput, dropdown);
+    // helper to place overlay under the input
+    const placeDropdown = () => {
+      const r = destInput.getBoundingClientRect();
+      dropdown.style.left = `${r.left}px`;
+      dropdown.style.top  = `${r.bottom + 2}px`;
+      dropdown.style.width = `${r.width}px`;
+    };
+
+    // Append inputs (do NOT append dropdown here; it's body-level)
+    wrap.append(repoInput, tokenInput, fileInput, destInput);
 
     // Indeterminate progress bar
     const progressTrack = el("div", { className: "hf-track", style: { display: "none" } });
@@ -130,21 +140,9 @@ app.registerExtension({
     const normalizePath = (p) => (p || "").replace(/\\/g, "/").replace(/\/{2,}/g, "/");
     const joinPath = (a, b) => normalizePath((a?.endsWith("/") ? a : a + "/") + (b || ""));
 
-    // Reflow helper so dropdown can expand the node
-    const reflow = () => {
-      const targetH = Math.max(MIN_H, wrap.scrollHeight);
-      if (node.size[1] !== targetH) node.size[1] = targetH;
-      if (node?.graph?.setDirtyCanvas) node.graph.setDirtyCanvas(true, true);
-    };
-
     const renderDropdown = () => {
       dropdown.innerHTML = "";
-      if (!items.length) {
-        dropdown.style.display = "none";
-        active = -1;
-        reflow();
-        return;
-      }
+      if (!items.length) { dropdown.style.display = "none"; active = -1; return; }
 
       items.forEach((it, idx) => {
         const row = document.createElement("div");
@@ -158,26 +156,23 @@ app.registerExtension({
         });
 
         row.onmouseenter = () => { active = idx; renderDropdown(); };
-
         const choose = () => {
           const chosen = normalizePath(it.path);
           destInput.value = chosen;
           node.properties.dest_dir = chosen;
           items = []; active = -1;
           dropdown.style.display = "none";
-          reflow();
-          scheduleFetch(); // show next level (children) immediately
+          scheduleFetch(); // show next level immediately
         };
-
-        // pointerdown fires before blur; keep focus
-        row.addEventListener("pointerdown", (e)=>{ e.preventDefault(); choose(); });
-        row.addEventListener("mousedown",   (e)=>{ e.preventDefault(); choose(); });
+        // fire before blur; keep focus
+        row.addEventListener("pointerdown", (e)=>{ e.preventDefault(); e.stopPropagation(); choose(); });
+        row.addEventListener("mousedown",   (e)=>{ e.preventDefault(); e.stopPropagation(); choose(); });
 
         dropdown.appendChild(row);
       });
 
+      placeDropdown();                 // anchor to input
       dropdown.style.display = "block";
-      reflow();
     };
 
     const scheduleFetch = () => {
@@ -220,10 +215,11 @@ app.registerExtension({
         destInput.setSelectionRange(pos, pos);
       }
       node.properties.dest_dir = normalized;
+      placeDropdown();
       scheduleFetch();
     });
 
-    destInput.addEventListener("focus", () => scheduleFetch());
+    destInput.addEventListener("focus", () => { placeDropdown(); scheduleFetch(); });
 
     // keyboard nav
     destInput.addEventListener("keydown", (e) => {
@@ -236,33 +232,33 @@ app.registerExtension({
         destInput.value = normalizePath(it.path);
         node.properties.dest_dir = destInput.value;
         items = []; active = -1; dropdown.style.display = "none";
-        reflow();
         scheduleFetch();
       } else if (e.key === "Escape") {
-        dropdown.style.display = "none"; items=[]; active=-1; reflow();
+        dropdown.style.display = "none"; items=[]; active=-1;
       }
     });
 
-    // hide on blur
-    destInput.addEventListener("blur", () => setTimeout(()=> { dropdown.style.display="none"; reflow(); }, 120));
+    // hide shortly after blur so clicks register
+    const hideDropdownSoon = () => setTimeout(()=> { dropdown.style.display = "none"; }, 120);
+    destInput.addEventListener("blur", hideDropdownSoon);
 
-    // ====== Add DOM widget (dynamic height so dropdown can expand) ======
+    // keep overlay sane on viewport changes
+    const onScroll = () => hideDropdownSoon();
+    const onResize = () => hideDropdownSoon();
+    window.addEventListener("scroll", onScroll, true);
+    window.addEventListener("resize", onResize);
+
+    // Add DOM widget with fixed min height (unchanged)
     const MIN_W = 460;
     const MIN_H = 230;
-    const widget = node.addDOMWidget("hf_downloader", "dom", wrap, {
+    node.addDOMWidget("hf_downloader", "dom", wrap, {
       serialize: false,
       hideOnZoom: false,
       getMinHeight: () => MIN_H
     });
 
-    // Let widget height reflect actual content
-    widget.computeSize = (w) => {
-      const h = Math.max(MIN_H, wrap.scrollHeight);
-      return [ (w ?? (node.size?.[0] || MIN_W)) - 20, h ];
-    };
-
-    // ====== Size fixes (relax max clamp so dropdown can show) ======
-    const MAX_H = 1200; // allow growth
+    // ====== Size fixes (unchanged except original logic) ======
+    const MAX_H = 300;
     node.size = [
       Math.max(node.size?.[0] || MIN_W, MIN_W),
       Math.max(node.size?.[1] || MIN_H, MIN_H),
@@ -270,8 +266,7 @@ app.registerExtension({
     const prevOnResize = node.onResize;
     node.onResize = function() {
       this.size[0] = Math.max(this.size[0], MIN_W);
-      // allow growth; only enforce minimum
-      this.size[1] = Math.max(this.size[1], MIN_H);
+      this.size[1] = Math.min(Math.max(this.size[1], MIN_H), MAX_H);
       if (prevOnResize) prevOnResize.apply(this, arguments);
     };
 
@@ -281,8 +276,7 @@ app.registerExtension({
     node._pollCount = 0;
 
     function showBar(on) {
-      progressTrack.style.display = on ? "block" : "none";
-      reflow();
+      progressTrack.style.display = on ? "block" : "none"; // force block
     }
     function setButtons(running) {
       downloadBtn.disabled = !!running;
@@ -301,7 +295,6 @@ app.registerExtension({
       node.gid = null;
       stopPolling();
       node._pollCount = 0;
-      reflow();
     }
 
     function startPolling() {
@@ -371,7 +364,7 @@ app.registerExtension({
         const res = await fetch("/hf/start", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ repo_id, filename, dest_dir, token_input })
+          body: JSON.stringify({ repo_id, filename, dest_dir, token_input, })
         });
         if (!res.ok) throw new Error(`Start ${res.status}`);
         const out = await res.json();
@@ -412,8 +405,15 @@ app.registerExtension({
     // Cleanup
     const originalOnRemoved = node.onRemoved;
     node.onRemoved = function () {
+      // existing cleanup
       stopPolling();
       if (wrap && wrap.parentNode) wrap.remove();
+
+      // new: remove listeners and the body overlay
+      window.removeEventListener("scroll", onScroll, true);
+      window.removeEventListener("resize", onResize);
+      try { dropdown.remove(); } catch {}
+
       if (originalOnRemoved) originalOnRemoved.call(this);
     };
   }
