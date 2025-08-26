@@ -305,7 +305,7 @@ app.registerExtension({
       });
 
       // Canvas size & progress UI
-      this.size = [460, 200];
+      this.size = [460, 400];
       this.onDrawForeground = (ctx) => {
         const pad = 10;
         const w = this.size[0] - pad * 2;
@@ -382,6 +382,7 @@ app.registerExtension({
     };
   },
 });
+
 
 
 
