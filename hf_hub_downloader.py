@@ -60,9 +60,8 @@ async def _download_file_async(gid: str, repo_id: str, filename: str, dest_dir: 
         def get_file_info():
             api = HfApi(token=token) if token else HfApi()
             try:
-                # Check if file exists and get metadata
+                # Use get_paths_info (available in huggingface_hub >= 0.23.0)
                 try:
-                    # Use get_paths_info (available in huggingface_hub >= 0.23.0)
                     paths_info = api.get_paths_info(repo_id=repo_id, repo_type="model", paths=[filename])
                     if not paths_info or filename not in [p.path for p in paths_info]:
                         raise ValueError(f"File {filename} not found in repo {repo_id}")
@@ -162,23 +161,29 @@ _active_tasks: Dict[str, asyncio.Task] = {}
 async def hf_start(request):
     try:
         body = await request.json()
-    except:
-        return web.json_response({"error": "Invalid JSON"}, status=400)
+    except json.JSONDecodeError:
+        return web.json_response({"error": "Invalid JSON in request body"}, status=400)
         
     repo_id = (body.get("repo_id") or "").strip()
     filename = (body.get("filename") or "").strip()
-    dest_dir = (body.get("dest_dir") or os.getcwd()).strip()
+    dest_dir = (body.get("dest_dir") or "").strip()
     
-    if not repo_id or not filename:
-        return web.json_response({"error": "repo_id and filename are required."}, status=400)
+    if not repo_id or not filename or not dest_dir:
+        return web.json_response({"error": "repo_id, filename, and dest_dir are required"}, status=400)
     
     # Validate destination directory
     try:
+        # Ensure dest_dir is a valid directory path
+        if os.path.exists(dest_dir) and not os.path.isdir(dest_dir):
+            return web.json_response({"error": f"Destination path {dest_dir} is not a directory"}, status=400)
         os.makedirs(dest_dir, exist_ok=True)
-        if not os.access(dest_dir, os.W_WRITEABLE):
-            return web.json_response({"error": "Destination directory is not writable"}, status=400)
+        # Create a temporary file to test write permissions
+        test_file = os.path.join(dest_dir, f".test_write_{uuid4().hex}")
+        with open(test_file, "w") as f:
+            f.write("test")
+        os.remove(test_file)
     except Exception as e:
-        return web.json_response({"error": f"Cannot access destination: {e}"}, status=400)
+        return web.json_response({"error": f"Cannot access or write to destination directory {dest_dir}: {str(e)}"}, status=400)
 
     gid = uuid4().hex
     token = os.environ.get("HF_READ_TOKEN") or os.environ.get("HF_TOKEN")
@@ -249,8 +254,8 @@ async def hf_stop(request):
     try:
         body = await request.json()
         gid = (body.get("gid") or "").strip()
-    except:
-        return web.json_response({"error": "Invalid JSON"}, status=400)
+    except json.JSONDecodeError:
+        return web.json_response({"error": "Invalid JSON in request body"}, status=400)
     
     if not gid:
         return web.json_response({"error": "gid is required"}, status=400)
