@@ -208,7 +208,7 @@ app.registerExtension({
       tokenInput.type = "text";
       tokenInput.placeholder = "SECRET TOKEN";
       Object.assign(tokenInput.style, {
-        width:"100%", height:"26px", padding:"2px 8px",
+        width:"100%", height:"26px", padding:"8px 8px",
         border:"1px solid #444", borderRadius:"6px",
         background:"var(--comfy-input-bg, #2a2a2a)", color:"#ddd",
         boxSizing:"border-box", outline:"none"
@@ -382,6 +382,7 @@ app.registerExtension({
     };
   },
 });
+
 
 
 
