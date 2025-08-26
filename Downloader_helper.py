@@ -295,53 +295,6 @@ async def aria2_stop(request):
         return web.json_response({"ok": True})
     except Exception as e:
         return web.json_response({"error": f"aria2c RPC error: {e}"}, status=500)
-# Add after other imports
-import pathlib, fnmatch
-
-# ---- Suggestion helpers ----
-def _normalize_slashes(path: str) -> str:
-    return path.replace("\\", "/") if path else ""
-
-def _expand_user(s: str) -> str:
-    try:
-        return os.path.expanduser(os.path.expandvars(s))
-    except Exception:
-        return s
-
-def _split_prefix(prefix: str):
-    raw = _normalize_slashes(_expand_user(prefix.strip()))
-    if not raw:
-        return pathlib.Path("."), "*"
-    if raw.endswith("/"):
-        return pathlib.Path(raw.rstrip("/") or "/"), "*"
-    p = pathlib.Path(raw)
-    base = p.parent if str(p.parent) not in ("", ".") else pathlib.Path(".")
-    return base, p.name + "*"
-
-def _iter_dir(base: pathlib.Path):
-    try:
-        with os.scandir(base) as it:
-            for e in it:
-                yield pathlib.Path(e.path)
-    except Exception:
-        return
-
-def suggest_paths(prefix: str, limit: int = 50):
-    base, patt = _split_prefix(prefix)
-    out = []
-    for child in _iter_dir(base):
-        if fnmatch.fnmatch(child.name, patt):
-            s = _normalize_slashes(str(child))
-            out.append(s + "/" if child.is_dir() else s)
-            if len(out) >= limit:
-                break
-    return out
-
-@PromptServer.instance.routes.get("/aria2/suggest")
-async def aria2_suggest(request):
-    q = request.query.get("prefix", "")
-    return web.json_response({"items": suggest_paths(q)})
-
 
 # ========= UI-only node =========
 class Aria2Downloader:
