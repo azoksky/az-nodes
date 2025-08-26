@@ -40,7 +40,7 @@ app.registerExtension({
       this.properties.dest_dir = normalizePath(this.properties.dest_dir || "");
       this.serialize_widgets = true;
 
-      // --- Destination input with dropdown (portaled to body) ---
+      // --- Destination input with dropdown (unchanged) ---
       const container = document.createElement("div");
       Object.assign(container.style,{ position:"relative", width:"100%" });
 
@@ -55,7 +55,6 @@ app.registerExtension({
       });
       destInput.value = this.properties.dest_dir;
 
-      // PORTAL: dropdown in document.body to avoid canvas clipping
       const dropdown = document.createElement("div");
       Object.assign(dropdown.style,{
         position:"fixed",
@@ -84,7 +83,6 @@ app.registerExtension({
       const renderDropdown = () => {
         dropdown.innerHTML = "";
         if (!items.length) { dropdown.style.display = "none"; active = -1; return; }
-
         items.forEach((it, idx)=>{
           const row = document.createElement("div");
           row.textContent = it.name;
@@ -93,25 +91,19 @@ app.registerExtension({
             background: idx===active ? "#444" : "transparent",
             userSelect: "none"
           });
-
           row.onmouseenter = ()=>{ active = idx; renderDropdown(); };
-
           const choose = () => {
             const chosen = normalizePath(it.path);
             destInput.value = chosen;
             this.properties.dest_dir = chosen;
             items = []; active = -1;
             dropdown.style.display="none";
-            scheduleFetch(); // show next level immediately
+            scheduleFetch();
           };
-
-          // use pointerdown so it fires before blur; also prevent default
           row.addEventListener("pointerdown", (e)=>{ e.preventDefault(); e.stopPropagation(); choose(); });
           row.addEventListener("mousedown",   (e)=>{ e.preventDefault(); e.stopPropagation(); choose(); });
-
           dropdown.appendChild(row);
         });
-
         placeDropdown();
         dropdown.style.display = "block";
       };
@@ -143,7 +135,6 @@ app.registerExtension({
         }
       };
 
-      // Replace "\" -> "/" as you type, maintain caret, and fetch
       destInput.addEventListener("input", ()=>{
         const raw = destInput.value;
         const prevStart = destInput.selectionStart;
@@ -161,7 +152,6 @@ app.registerExtension({
 
       destInput.addEventListener("focus", ()=>{ placeDropdown(); scheduleFetch(); });
 
-      // keyboard navigation
       destInput.addEventListener("keydown", (e)=>{
         if (dropdown.style.display !== "block" || !items.length) return;
         if (e.key === "ArrowDown") { e.preventDefault(); active = (active+1) % items.length; renderDropdown(); }
@@ -188,8 +178,7 @@ app.registerExtension({
       window.addEventListener("scroll", onScroll, true);
       window.addEventListener("resize", onResize);
 
-      // --- Inputs (URL + button) ---
-      //this.addWidget("text", "URL", this.properties.url, v => this.properties.url = v ?? "");
+      // --- URL (unchanged) ---
       const urlInput = document.createElement("input");
       urlInput.type = "text";
       urlInput.placeholder = "URL";
@@ -198,12 +187,53 @@ app.registerExtension({
         border:"1px solid #444", borderRadius:"6px",
         background:"var(--comfy-input-bg, #2a2a2a)", color:"#ddd",
         boxSizing:"border-box", outline:"none"
-          });
-      urlInput.value = this.properties.url || "";  // optional prefill
+      });
+      urlInput.value = this.properties.url || "";
       const urlWidget = this.addDOMWidget("url", "URL", urlInput);
       urlWidget.computeSize = () => [this.size[0] - 20, 34];
 
-      // --- State for progress view ---
+      // --- NEW: Token textbox (only shown if server lacks HF_READ_TOKEN) ---
+      const tokenWrap = document.createElement("div");
+      const tokenInput = document.createElement("input");
+      tokenInput.type = "password";
+      tokenInput.placeholder = "Hugging Face token (optional)";
+      Object.assign(tokenInput.style, {
+        width:"100%", height:"26px", padding:"2px 8px",
+        border:"1px solid #444", borderRadius:"6px",
+        background:"var(--comfy-input-bg, #2a2a2a)", color:"#ddd",
+        boxSizing:"border-box", outline:"none"
+      });
+      tokenWrap.appendChild(tokenInput);
+      const tokenHint = document.createElement("div");
+      tokenHint.textContent = "Using HF_READ_TOKEN from server.";
+      Object.assign(tokenHint.style, { fontSize:"11px", opacity:"0.8", display:"none", padding:"2px 4px" });
+      tokenWrap.appendChild(tokenHint);
+
+      const tokenWidget = this.addDOMWidget("token", "Token", tokenWrap);
+      tokenWidget.computeSize = () => [this.size[0] - 20, 34 + (tokenHint.style.display === "none" ? 0 : 16)];
+
+      // Probe server for env token and toggle visibility accordingly
+      (async () => {
+        try {
+          const res = await api.fetchApi("/aria2/token_status");
+          const j = await res.json();
+          if (j?.has_env_token) {
+            // Hide textbox, show hint
+            tokenInput.style.display = "none";
+            tokenHint.style.display = "block";
+          } else {
+            // Show textbox
+            tokenInput.style.display = "block";
+            tokenHint.style.display = "none";
+          }
+        } catch {
+          // On error, leave textbox visible so user can still paste token
+          tokenInput.style.display = "block";
+          tokenHint.style.display = "none";
+        }
+      })();
+
+      // --- State for progress view (unchanged) ---
       this.gid = null;
       this._status = "Idle";
       this._progress = 0;
@@ -213,7 +243,7 @@ app.registerExtension({
       this._filename = "";
       this._filepath = "";
 
-      // Download button (no queue)
+      // Download button (unchanged except: include token if textbox is shown + non-empty)
       this.addWidget("button", "Download", "Start", async () => {
         if (this.gid) return;
 
@@ -229,11 +259,19 @@ app.registerExtension({
         this._filepath = "";
         this.setDirtyCanvas(true);
 
+        // Only send token when the textbox is visible and filled
+        const tokenBoxVisible = tokenInput.style.display !== "none";
+        const tokenVal = tokenBoxVisible ? (tokenInput.value || "").trim() : "";
+
         let resp, data;
         try {
           resp = await api.fetchApi("/aria2/start", {
             method: "POST",
-            body: JSON.stringify({ url, dest_dir: dest }),
+            body: JSON.stringify({
+              url,
+              dest_dir: dest,
+              ...(tokenVal ? { token: tokenVal } : {})  // include only if provided
+            }),
           });
           data = await resp.json();
         } catch {
@@ -290,7 +328,7 @@ app.registerExtension({
         poll();
       });
 
-      // Canvas size & progress UI
+      // Canvas size & progress UI (unchanged)
       this.size = [460, 200];
       this.onDrawForeground = (ctx) => {
         const pad = 10;
@@ -298,7 +336,6 @@ app.registerExtension({
         const barH = 14;
         const yBar = this.size[1] - pad - barH - 4;
 
-        // Status
         ctx.font = "12px sans-serif";
         ctx.textAlign = "left";
         ctx.textBaseline = "bottom";
@@ -306,14 +343,12 @@ app.registerExtension({
         const meta = `Status: ${this._status}   •   Speed: ${fmtBytes(this._speed)}/s   •   ETA: ${fmtETA(this._eta)}`;
         ctx.fillText(meta, pad, yBar - 26);
 
-        // Filename/path
         if (this._filename || this._filepath) {
           const show = this._filepath || this._filename;
           ctx.fillStyle = "#8fa3b7";
           ctx.fillText(`Saved as: ${show}`, pad, yBar - 10);
         }
 
-        // Bar outline
         const radius = 7;
         ctx.lineWidth = 1; ctx.strokeStyle = "#666";
         ctx.beginPath();
@@ -329,7 +364,6 @@ app.registerExtension({
         ctx.closePath();
         ctx.stroke();
 
-        // Fill
         const pct = Math.max(0, Math.min(100, this._progress || 0));
         const fillW = Math.round((w * pct) / 100);
         ctx.save();
@@ -342,7 +376,6 @@ app.registerExtension({
         ctx.fill();
         ctx.restore();
 
-        // % label
         ctx.font = "12px sans-serif";
         ctx.textAlign = "center";
         ctx.textBaseline = "middle";
@@ -350,23 +383,19 @@ app.registerExtension({
         ctx.fillText(`${pct.toFixed(0)}%`, pad + w / 2, yBar + barH / 2);
       };
 
-      // Cleanup
+      // Cleanup (unchanged)
       const oldRemoved = this.onRemoved;
       this.onRemoved = function () {
         if (this._pollTimer) clearTimeout(this._pollTimer);
-        // remove dropdown + listeners
         if (dropdown && dropdown.parentNode) dropdown.parentNode.removeChild(dropdown);
         window.removeEventListener("scroll", onScroll, true);
         window.removeEventListener("resize", onResize);
         if (oldRemoved) oldRemoved.apply(this, arguments);
       };
 
-      // If prefilled, show suggestions right away
       if (destInput.value) setTimeout(()=>destInput.dispatchEvent(new Event("input")), 50);
 
       return r;
     };
   },
 });
-
-
