@@ -220,7 +220,7 @@ app.registerExtension({
         const res = await fetch("/hf/start", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ repo_id, filename, dest_dir, token_input })
+          body: JSON.stringify({ repo_id, filename, dest_dir, token_input,})
         });
         if (!res.ok) throw new Error(`Start ${res.status}`);
         const out = await res.json();
