@@ -1,109 +1,99 @@
+# -*- coding: utf-8 -*-
+"""
+ComfyUI Path Uploader (UI-only node)
+- POST /az/upload : multipart/form-data { file, dest_dir }
+- Streams to disk; client shows progress using XHR upload events.
+"""
 import os
-from pathlib import Path
+import re
 from aiohttp import web
 from server import PromptServer
 
-def _normalize_dest_folder(text: str) -> Path:
+# ---------- helpers ----------
+_SAN = re.compile(r'[\\:*?"<>|\x00-\x1F]')  # we allow slashes to keep path
+def _safe_expand(p: str) -> str:
+    return os.path.abspath(os.path.expanduser(p or ""))
+
+def _safe_filename(name: str) -> str:
+    # keep basename safe; leave extension
+    base = os.path.basename(name or "")
+    return _SAN.sub("_", base) or "upload.bin"
+
+# ---------- routes ----------
+@PromptServer.instance.routes.post("/az/upload")
+async def az_upload(request: web.Request):
     """
-    Accept absolute or relative folder paths:
-    - Expands ~ and %VARS%
-    - Converts backslashes/slashes as needed
-    - Relative paths are resolved against *current working dir*
+    Form fields:
+      - file: binary
+      - dest_dir: optional server-side folder (created if missing)
     """
-    if not text:
-        raise ValueError("Empty destination")
+    reader = await request.multipart()
 
-    # Expand env vars and ~
-    text = os.path.expandvars(text.strip())
-    text = os.path.expanduser(text)
+    dest_dir = None
+    file_field = None
 
-    # Normalize separators (Path handles slashes on Windows)
-    # Allow both "C:\\x\\y" and "C:/x/y"
-    p = Path(text)
+    # accept fields in any order
+    while True:
+        field = await reader.next()
+        if field is None:
+            break
+        if field.name == "dest_dir":
+            dest_dir_val = (await field.text()) or ""
+            dest_dir = _safe_expand(dest_dir_val)
+        elif field.name == "file":
+            file_field = field
 
-    # If it's relative, anchor to the process CWD (where you launched ComfyUI)
-    if not p.is_absolute():
-        p = (Path(os.getcwd()) / p).resolve()
+    if file_field is None:
+        return web.json_response({"error": "No file part provided"}, status=400)
 
-    return p
+    # fall back to ./uploads if dest not provided
+    if not dest_dir:
+        dest_dir = _safe_expand("./uploads")
 
-def _register(routes, route_path: str):
-    print(f"[PathUploader] Register {route_path} (write ANYWHERE—be careful)")
+    try:
+        os.makedirs(dest_dir, exist_ok=True)
+    except Exception as e:
+        return web.json_response({"error": f"Cannot create destination: {e}"}, status=400)
 
-    @routes.options(route_path)
-    async def preflight(request):
-        return web.Response(status=200, headers={
-            "Access-Control-Allow-Origin": "*",
-            "Access-Control-Allow-Methods": "POST, OPTIONS",
-            "Access-Control-Allow-Headers": "*",
-        })
+    if not os.path.isdir(dest_dir) or not os.access(dest_dir, os.W_OK):
+        return web.json_response({"error": f"Destination not writable: {dest_dir}"}, status=400)
 
-    @routes.post(route_path)
-    async def upload_any(request):
-        # The client sends ?dest=<folder path> (URL-encoded)
-        dest = request.query.get("dest", "")
-        if not dest:
-            return web.json_response({"error": "missing ?dest"}, status=400)
+    filename = _safe_filename(file_field.filename or "upload.bin")
+    save_path = os.path.join(dest_dir, filename)
 
-        try:
-            dest_dir = _normalize_dest_folder(dest)
-        except Exception as e:
-            return web.json_response({"error": f"invalid dest: {e}"}, status=400)
+    # stream to disk
+    total = 0
+    try:
+        with open(save_path, "wb") as f:
+            while True:
+                chunk = await file_field.read_chunk()  # default 8192
+                if not chunk:
+                    break
+                f.write(chunk)
+                total += len(chunk)
+    except Exception as e:
+        return web.json_response({"error": f"Write failed: {e}"}, status=500)
 
-        # Create the destination folder tree
-        dest_dir.mkdir(parents=True, exist_ok=True)
+    return web.json_response({
+        "ok": True,
+        "filename": filename,
+        "path": os.path.abspath(save_path),
+        "bytes": total
+    })
 
-        # Pick up filename from multipart (preferred) or query/body
-        filename = request.query.get("filename", "upload.bin")
-        if request.content_type and request.content_type.startswith("multipart/"):
-            post = await request.post()
-            filefield = post.get("file")
-            if filefield is None:
-                return web.json_response({"error": "no file part"}, status=400)
-            filename = filefield.filename or filename
-            data = filefield.file.read()
-        else:
-            data = await request.read()
-
-        final_path = (dest_dir / filename)
-        try:
-            with open(final_path, "wb") as f:
-                f.write(data)
-        except Exception as e:
-            return web.json_response({"error": f"I/O error: {e}"}, status=500)
-
-        return web.json_response(
-            {"ok": True, "path": str(final_path)},
-            headers={"Access-Control-Allow-Origin": "*"},
-        )
-
-def add_routes():
-    routes = PromptServer.instance.routes
-    # Register with and without /api to match different server mounts
-    _register(routes, "/pathuploader/upload-any")
-    _register(routes, "/api/pathuploader/upload-any")
-
-class UploadToAnyPath:
+# ---------- node stub ----------
+class PathUploader:
     """
-    Node: user types a *folder path*. Upload starts immediately from the frontend.
+    UI-only node; widgets are provided by JS. No queue execution involved.
     """
     @classmethod
     def INPUT_TYPES(cls):
-        return {"required": {
-            "dest_folder": ("STRING", {
-                "default": "input/azok",  # relative → goes under your launch directory
-                "multiline": False
-            }),
-        }}
+        return {"required": {}}
 
-    RETURN_TYPES = ("STRING",)
-    RETURN_NAMES = ("dest_folder",)
-    FUNCTION = "echo"
+    RETURN_TYPES = ()
+    FUNCTION = "noop"
     CATEGORY = "AZ_Nodes"
 
-    def echo(self, dest_folder: str):
-        return (dest_folder.strip(),)
+    def noop(self):
+        return ()
 
-    @classmethod
-    def IS_CHANGED(cls, **kwargs):
-        return float("NaN")
