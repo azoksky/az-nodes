@@ -15,6 +15,7 @@ from server import PromptServer
 
 # ========= Config =========
 ARIA2_SECRET = os.environ.get("COMFY_ARIA2_SECRET", "comfyui_aria2_secret")
+HF_TOKEN = os.environ.get("HF_READ_TOKEN", "")
 ARIA2_RPC_URL = os.environ.get("COMFY_ARIA2_RPC", "http://127.0.0.1:6800/jsonrpc")
 ARIA2_BIN = shutil.which("aria2c") or "aria2c"
 RPC_START_ARGS = [
@@ -26,6 +27,8 @@ RPC_START_ARGS = [
     "--console-log-level=error",
     "--disable-ipv6=true",
 ]
+if HF_TOKEN:
+    RPC_START_ARGS.append(f'--header=Authorization: Bearer {HF_TOKEN}')
 
 # ========= RPC helper =========
 def _aria2_rpc(method, params=None):
@@ -308,3 +311,4 @@ class Aria2Downloader:
 
     def noop(self):
         return ()
+
