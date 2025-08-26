@@ -27,8 +27,8 @@ RPC_START_ARGS = [
     "--console-log-level=error",
     "--disable-ipv6=true",
 ]
-# if HF_TOKEN:
-#     RPC_START_ARGS.append(f'--header=Authorization: Bearer {HF_TOKEN}')
+if HF_TOKEN:
+    RPC_START_ARGS.append(f'--header=Authorization: Bearer {HF_TOKEN}')
 
 # ========= RPC helper =========
 def _aria2_rpc(method, params=None):
@@ -316,6 +316,7 @@ class Aria2Downloader:
 
     def noop(self):
         return ()
+
 
 
 
