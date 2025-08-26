@@ -170,6 +170,109 @@ def _eta(total_len, done_len, speed):
     except Exception:
         return None
 
+# ========= Path suggestion backend (mirrors path_uploader) =========
+import fnmatch
+import pathlib
+
+_SUGGEST_HISTORY = os.path.join(pathlib.Path.home(), ".aria2_path_history.json")
+_SUGGEST_LIMIT = 50
+_MAX_HISTORY = 200
+
+def _normalize_slashes(path: str) -> str:
+    if not path:
+        return ""
+    p = path.replace("\\", "/")
+    # collapse repeats but keep UNC //server
+    while "//" in p and not p.startswith("//"):
+        p = p.replace("//", "/")
+    return p
+
+def _expand_user_vars(s: str) -> str:
+    try:
+        return os.path.expanduser(os.path.expandvars(s or ""))
+    except Exception:
+        return s or ""
+
+def _split_base_and_glob(prefix: str):
+    raw = _normalize_slashes(_expand_user_vars(prefix.strip()))
+    if not raw:
+        return pathlib.Path("."), "*"
+    if raw.endswith("/"):
+        base = pathlib.Path(raw.rstrip("/") or "/")
+        return base, "*"
+    p = pathlib.Path(raw)
+    base = p.parent if str(p.parent) not in ("", ".") else (pathlib.Path("/") if raw.startswith("/") else pathlib.Path("."))
+    return base, (p.name + "*")
+
+def _iter_dir(base: pathlib.Path):
+    try:
+        with os.scandir(base) as it:
+            for e in it:
+                yield pathlib.Path(e.path)
+    except Exception:
+        return
+
+def _hist_load():
+    try:
+        with open(_SUGGEST_HISTORY, "r", encoding="utf-8") as f:
+            d = json.load(f)
+            return [str(x) for x in d][- _MAX_HISTORY:]
+    except Exception:
+        return []
+
+def _hist_add(path: str):
+    if not path:
+        return
+    path = _normalize_slashes(path)
+    h = _hist_load()
+    h = [p for p in h if p != path]
+    h.insert(0, path)
+    try:
+        with open(_SUGGEST_HISTORY, "w", encoding="utf-8") as f:
+            json.dump(h[:_MAX_HISTORY], f, ensure_ascii=False, indent=2)
+    except Exception:
+        pass
+
+def suggest_paths(prefix: str, limit: int = _SUGGEST_LIMIT):
+    pref = _normalize_slashes(prefix or "")
+    base, patt = _split_base_and_glob(pref)
+    res = []
+    seen = set()
+    # history first
+    for h in _hist_load():
+        n = _normalize_slashes(h)
+        if n.lower().startswith(pref.lower()) and n not in seen:
+            res.append(n); seen.add(n)
+            if len(res) >= limit:
+                return res
+    # fs matches
+    base_exp = pathlib.Path(_expand_user_vars(str(base)))
+    for child in _iter_dir(base_exp):
+        name = child.name
+        if not fnmatch.fnmatch(name, patt):
+            continue
+        try:
+            p = _normalize_slashes(str(child))
+            if p not in seen:
+                res.append(p); seen.add(p)
+                if len(res) >= limit:
+                    break
+            if child.is_dir():
+                d = p + "/"
+                if d not in seen:
+                    res.append(d); seen.add(d)
+                    if len(res) >= limit:
+                        break
+        except PermissionError:
+            continue
+    return res[:limit]
+
+@PromptServer.instance.routes.get("/aria2/suggest")
+async def aria2_suggest(request):
+    q = request.query.get("prefix", "")
+    items = suggest_paths(q, limit=_SUGGEST_LIMIT)
+    return web.json_response({"items": items})
+
 # ========= API =========
 @PromptServer.instance.routes.post("/aria2/start")
 async def aria2_start(request):
@@ -226,6 +329,8 @@ async def aria2_start(request):
         gid = res.get("result")
         if not gid:
             return web.json_response({"error": "aria2c did not return a gid."}, status=500)
+        # record successful destination in suggestions history
+        _hist_add(dest_dir)
         return web.json_response({
             "gid": gid,
             "dest_dir": dest_dir,
