@@ -37,6 +37,7 @@ app.registerExtension({
 
       this.properties = this.properties || {};
       this.properties.url = this.properties.url || "";
+      this.properties.token = this.properties.token || "";
       this.properties.dest_dir = normalizePath(this.properties.dest_dir || "");
       this.serialize_widgets = true;
 
@@ -212,8 +213,8 @@ app.registerExtension({
         background:"var(--comfy-input-bg, #2a2a2a)", color:"#ddd",
         boxSizing:"border-box", outline:"none"
           });
-      tokenInput.value = this.properties.url || "";  // optional prefill
-      const tokenInputWidget = this.addDOMWidget("url", "URL", urlInput);
+      tokenInput.value = this.properties.token || "";  // optional prefill
+      const tokenInputWidget = this.addDOMWidget("token", "TOKEN", tokenInput);
       tokenInputWidget.computeSize = () => [this.size[0] - 20, 34];
 
       // --- State for progress view ---
@@ -381,6 +382,7 @@ app.registerExtension({
     };
   },
 });
+
 
 
 
