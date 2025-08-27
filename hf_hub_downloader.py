@@ -31,11 +31,7 @@ def _worker(gid: str, repo_id: str, filename: str, dest_dir: str, token: str | N
             repo_id=repo_id,
             filename=filename,
             local_dir=dest_dir,
-            local_dir_use_symlinks=False,
-            token=token,
-            force_download=False,
-            resume_download=True,
-        )
+            token=token)
 
         # Finished
         _set(gid, state="done", msg="File download complete.", filepath=local_path)
