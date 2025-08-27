@@ -89,7 +89,6 @@ def main():
         ("https://github.com/Kosinkadink/ComfyUI-VideoHelperSuite.git",     "ComfyUI-VideoHelperSuite"),
         ("https://github.com/Fannovel16/ComfyUI-Frame-Interpolation.git",   "ComfyUI-Frame-Interpolation"),
         ("https://github.com/welltop-cn/ComfyUI-TeaCache.git",              "ComfyUI-TeaCache"),
-        ("https://github.com/pollockjj/ComfyUI-MultiGPU.git",               "ComfyUI-MultiGPU"),
         ("https://github.com/nunchaku-tech/ComfyUI-nunchaku.git",           "ComfyUI-nunchaku"),
     ]:
         clone(repo, CUSTOM / name)
@@ -112,6 +111,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 
