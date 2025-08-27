@@ -13,6 +13,7 @@ os.environ["COMFYUI_MODEL_PATH"] = "/workspace/ComfyUI/models"
 workspace = Path("/workspace")
 COMFY = workspace / "ComfyUI"
 CUSTOM = COMFY / "custom_nodes"
+USER   = COMFY / "user" / "default"
 
 def run(cmd, cwd=None, check=True):
     print(f"→ {' '.join(cmd)}")
@@ -32,7 +33,36 @@ def clone(repo: str, dest: Path):
     run(["git", "clone", "--depth=1", "--single-branch", "--no-tags", repo, str(dest)])
 
 def bg_install_impact():
-    """Run only the Impact installers in the background (non-blocking)."""
+    downloads = [
+        (
+            "https://raw.githubusercontent.com/azoksky/az-nodes/refs/heads/main/other/runpod/comfy.settings.json",
+            USER / "comfy.settings.json",
+        ),
+        (
+            "https://raw.githubusercontent.com/azoksky/az-nodes/refs/heads/main/other/runpod/rgthree_config.json",
+            CUSTOM / "rgthree-comfy" / "rgthree_config.json",
+        ),
+    ]
+    def _fetch(url: str, dest: Path, attempts: int = 3, timeout: int = 30) -> bool:
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        tmp = dest.with_suffix(dest.suffix + ".part")
+        for i in range(1, attempts + 1):
+            try:
+                with urllib.request.urlopen(url, timeout=timeout) as r, open(tmp, "wb") as f:
+                    shutil.copyfileobj(r, f)
+                tmp.replace(dest)  # atomic move
+                print(f"✓ downloaded: {dest}  ← {url}")
+                return True
+            except Exception as e:
+                print(f"⚠ attempt {i}/{attempts} failed for {url}: {e}")
+                tmp.unlink(missing_ok=True)
+        print(f"✗ giving up on {url}")
+        return False
+    all_ok = True
+    for url, dest in downloads:
+        if not _fetch(url, dest):
+            all_ok = False
+    print(f"Successfully copied all settings..hurray")
     targets = [
         CUSTOM / "ComfyUI-Impact-Pack" / "install.py",
         CUSTOM / "ComfyUI-Impact-Subpack" / "install.py",
@@ -71,13 +101,16 @@ def main():
     # 3) Clone Impact-Subpack
     impact_subpack = CUSTOM / "ComfyUI-Impact-Subpack"
     clone("https://github.com/ltdrdata/ComfyUI-Impact-Subpack.git", impact_subpack)
+    
+    # 4) Clone Impact-Subpack
+    rgthree_comfy = CUSTOM / "rgthree-comfy"
+    clone(https://github.com/rgthree/rgthree-comfy.git", rgthree_comfy)
 
-    # 4) NOW start the background installers (your desired ordering)
+    # 5) NOW start the background installers (your desired ordering)
     threading.Thread(target=bg_install_impact, daemon=True).start()
 
-    # 5) Clone the rest (no duplicates)
+    # 6) Clone the rest (no duplicates)
     for repo, name in [
-        ("https://github.com/rgthree/rgthree-comfy.git",                    "rgthree-comfy"),
         ("https://github.com/ltdrdata/ComfyUI-Manager.git",                 "ComfyUI-Manager"),
         ("https://github.com/Kosinkadink/ComfyUI-Advanced-ControlNet.git",  "ComfyUI-Advanced-ControlNet"),
         ("https://github.com/ssitu/ComfyUI_UltimateSDUpscale.git",          "ComfyUI_UltimateSDUpscale"),
@@ -111,6 +144,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 
