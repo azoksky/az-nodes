@@ -133,7 +133,7 @@ def main():
         allow_patterns=["*wan*"],
         local_dir=str(workspace / "wan"))
     
-    move_children(workspace / "wan", MODELS)
+    # move_children(workspace / "wan", MODELS)
 
     print(f"🚀 SUCCCESSFUL.. NOW RUN COMFY")
     # subprocess.Popen([
@@ -146,3 +146,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
