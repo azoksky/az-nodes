@@ -6,14 +6,14 @@ from pathlib import Path
 from huggingface_hub import snapshot_download, hf_hub_download
 import shutil
 from pathlib import Path
+import urllib.request  # <-- added
 
 # --- Env ---
-os.environ["COMFYUI_PATH"] = "/workspace/ComfyUI"
-os.environ["COMFYUI_MODEL_PATH"] = "/workspace/ComfyUI/models"
-workspace = Path("/workspace")
-COMFY = workspace / "ComfyUI"
-CUSTOM = COMFY / "custom_nodes"
-USER   = COMFY / "user" / "default"
+COMFY   = Path(os.environ["COMFYUI_PATH"])
+MODELS  = Path(os.environ["COMFYUI_MODEL_PATH"])
+workspace = COMFY.parent
+CUSTOM  = COMFY / "custom_nodes"
+USER    = COMFY / "user" / "default"
 
 def run(cmd, cwd=None, check=True):
     print(f"→ {' '.join(cmd)}")
@@ -102,9 +102,9 @@ def main():
     impact_subpack = CUSTOM / "ComfyUI-Impact-Subpack"
     clone("https://github.com/ltdrdata/ComfyUI-Impact-Subpack.git", impact_subpack)
     
-    # 4) Clone Impact-Subpack
+    # 4) Clone rgthree-comfy (fixed missing quote)
     rgthree_comfy = CUSTOM / "rgthree-comfy"
-    clone(https://github.com/rgthree/rgthree-comfy.git", rgthree_comfy)
+    clone("https://github.com/rgthree/rgthree-comfy.git", rgthree_comfy)
 
     # 5) NOW start the background installers (your desired ordering)
     threading.Thread(target=bg_install_impact, daemon=True).start()
@@ -125,13 +125,15 @@ def main():
         ("https://github.com/nunchaku-tech/ComfyUI-nunchaku.git",           "ComfyUI-nunchaku"),
     ]:
         clone(repo, CUSTOM / name)
+
     print(f"Downloading models now.....")
-    snapshot_download(
-        token=os.environ["HF_READ_TOKEN"],
+    # ensure the WAN snapshot goes under /workspace/wan (so the next line works)
+    snapshot_download(token=os.environ["HF_READ_TOKEN"],
         repo_id="azoksky/retention",
         allow_patterns=["*wan*"],
-        local_dir="/workspace")
-    move_children(Path("/workspace/wan"), Path("/workspace/ComfyUI/models"))
+        local_dir=str(workspace / "wan"))
+    
+    move_children(workspace / "wan", MODELS)
 
     print(f"🚀 SUCCCESSFUL.. NOW RUN COMFY")
     # subprocess.Popen([
@@ -144,8 +146,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
-
-
-
-
