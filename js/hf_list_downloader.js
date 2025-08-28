@@ -8,7 +8,7 @@ import { api } from "../../scripts/api.js";
   css.id = "hf-list-dl-style";
   css.textContent = `
   .hfld-wrap { display:flex; flex-direction:column; gap:8px; width:100%; }
-  .hfld-row { display:grid; grid-template-columns: 22px 1fr; align-items:center;
+  .hfld-row { display:grid; grid-template-columns: 22px 1fr max-content; align-items:center;
               padding:6px 8px; border:1px solid #333; border-radius:8px; background:#1f1f1f; }
   .hfld-row div { background: none !important; }
   .hfld-row.downloading { animation: hfldPulse 1.2s ease-in-out infinite alternate; background: rgba(80,140,255,0.15); }
@@ -20,6 +20,7 @@ import { api } from "../../scripts/api.js";
   .hfld-btn, .hfld-input { height:26px; border-radius:6px; border:1px solid #444; background:#2a2a2a; color:#ddd; padding:0 8px; }
   .hfld-btn { cursor:pointer; }
   .hfld-msg { color:#9ab; font-size:12px; min-height:16px; }
+  .hfld-time { font-size:11px; color:#cbd; padding-left:10px; white-space:nowrap; }
   `;
   document.head.appendChild(css);
 })();
@@ -81,8 +82,18 @@ app.registerExtension({
       widget.computeSize = () => [this.size[0] - 20, 440];
 
       // State
-      let items = []; // {id, repo_id, file_in_repo, local_subdir, el, cb}
+      let items = []; // {id, repo_id, file_in_repo, local_subdir, el, cb, timeEl}
       const setMsg = (t, isErr=false) => { msg.textContent = t || ""; msg.style.color = isErr? "#e88" : "#9ab"; };
+
+      const fmtTime = (ms) => {
+        ms = Math.max(0, Math.floor(ms));
+        const s = Math.floor(ms / 1000);
+        const h = Math.floor(s / 3600);
+        const m = Math.floor((s % 3600) / 60);
+        const ss = s % 60;
+        const pad = (n) => String(n).padStart(2, "0");
+        return `${pad(h)}:${pad(m)}:${pad(ss)}`;
+      };
 
       const render = () => {
         list.innerHTML = "";
@@ -95,9 +106,12 @@ app.registerExtension({
           lab.style.userSelect = "text";
           lab.style.fontSize = "12px";
           lab.textContent = `${it.repo_id}, ${it.file_in_repo}, ${it.local_subdir}`;
-          row.append(cb, lab);
+          const timeEl = document.createElement("div");
+          timeEl.className = "hfld-time";
+          timeEl.textContent = ""; // filled after download
+          row.append(cb, lab, timeEl);
           list.appendChild(row);
-          it.el = row; it.cb = cb;
+          it.el = row; it.cb = cb; it.timeEl = timeEl;
         });
       };
 
@@ -106,6 +120,7 @@ app.registerExtension({
         this.properties.list_path = p;
         setMsg("Reading list…");
         try {
+          // server now auto-fetches to /workspace if 'download_list.txt' is missing
           const resp = await api.fetchApi(`/hf_list/read?path=${encodeURIComponent(p)}`);
           const data = await resp.json();
           if (!resp.ok || !data.ok) throw new Error(data?.error || `HTTP ${resp.status}`);
@@ -126,6 +141,7 @@ app.registerExtension({
         if (!it?.el) return { ok:false, error:"Bad item" };
         it.el.classList.remove("done","error");
         it.el.classList.add("downloading");
+        const t0 = performance.now();
         try {
           const resp = await api.fetchApi("/hf_list/download", {
             method: "POST",
@@ -137,13 +153,17 @@ app.registerExtension({
           });
           const data = await resp.json();
           if (!resp.ok || !data.ok) throw new Error(data?.error || `HTTP ${resp.status}`);
+          const t1 = performance.now();
           it.el.classList.remove("downloading");
           it.el.classList.add("done");
-          return { ok:true, dst: data.dst };
+          if (it.timeEl) it.timeEl.textContent = fmtTime(t1 - t0);
+          return { ok:true, dst: data.dst, ms: (t1 - t0) };
         } catch (e) {
+          const t1 = performance.now();
           it.el.classList.remove("downloading");
           it.el.classList.add("error");
-          return { ok:false, error: e.message || "Download failed" };
+          if (it.timeEl) it.timeEl.textContent = fmtTime(t1 - t0);
+          return { ok:false, error: e.message || "Download failed", ms: (t1 - t0) };
         }
       };
 
@@ -154,16 +174,18 @@ app.registerExtension({
         btnDownload.disabled = true;
         btnRead.disabled = true;
         let okCount = 0, errCount = 0;
+        const batchStart = performance.now();
 
         for (const it of chosen) {
           const res = await downloadOne(it);
           if (res.ok) okCount += 1; else errCount += 1;
         }
 
+        const totalMs = performance.now() - batchStart;
         btnDownload.disabled = false;
         btnRead.disabled = false;
-        if (errCount) setMsg(`Finished with ${okCount} success, ${errCount} error(s).`, true);
-        else setMsg(`All ${okCount} item(s) downloaded.`);
+        if (errCount) setMsg(`Finished with ${okCount} success, ${errCount} error(s) in ${fmtTime(totalMs)}.`, true);
+        else setMsg(`All ${okCount} item(s) downloaded in ${fmtTime(totalMs)}.`);
       };
 
       // Wire up
