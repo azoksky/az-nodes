@@ -19,9 +19,9 @@ WORKSPACE = COMFY.parent.resolve()
 print(f"WORKSPACE : {WORKSPACE}")
 MODELS    = Path(os.environ.get("COMFYUI_MODEL_PATH", str(COMFY / "models"))).resolve()
 print(f"MODELS : {MODELS}")
-HF_TOKEN  = os.environ.get('HF_READ_TOKEN', 'Not set'))
+HF_TOKEN  = os.environ.get('HF_READ_TOKEN', 'Not set')
 print(f"HF_TOKEN : {HF_TOKEN}")
-print(f"HF_TOKEN : {os.environ.get('HF_READ_TOKEN', 'Not set'))}")
+print(f"HF_TOKEN : {os.environ.get('HF_READ_TOKEN', 'Not set')}")
 
 # Default list URL; can be overridden by env var DOWNLOAD_LIST
 LIST_URL_DEFAULT = "https://raw.githubusercontent.com/azoksky/az-nodes/refs/heads/main/other/runpod/download_list.txt"
