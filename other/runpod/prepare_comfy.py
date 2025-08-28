@@ -12,6 +12,8 @@ MODELS  = Path(os.environ["COMFYUI_MODEL_PATH"])
 workspace = COMFY.parent
 CUSTOM  = COMFY / "custom_nodes"
 USER    = COMFY / "user" / "default"
+LIST_URL_DEFAULT = "https://raw.githubusercontent.com/azoksky/az-nodes/refs/heads/main/other/runpod/download_list.txt"
+LIST_URL_ENV = (os.environ.get("DOWNLOAD_LIST") or "").strip() or LIST_URL_DEFAULT
 
 def _env_flag(name: str, default: bool = False) -> bool:
     val = os.getenv(name)
@@ -132,15 +134,14 @@ def main():
     # ---- FIXED DOWNLOAD_MODELS BLOCK ----
     if DOWNLOAD_MODELS:
         try:
-            url = "https://raw.githubusercontent.com/azoksky/az-nodes/refs/heads/main/other/runpod/download_list.txt"
             file_list_path = workspace / "download_list.txt"
             tmp = file_list_path.with_suffix(file_list_path.suffix + ".part")
 
             # Download the list
-            with urllib.request.urlopen(url, timeout=30) as r, open(tmp, "wb") as f:
+            with urllib.request.urlopen(LIST_URL_ENV, timeout=30) as r, open(tmp, "wb") as f:
                 shutil.copyfileobj(r, f)
             tmp.replace(file_list_path)
-            print(f"✓ downloaded: {file_list_path}  ← {url}")
+            print(f"✓ downloaded: {file_list_path}  ← {LIST_URL_ENV}")
             print("Downloading models now.....")
 
             stage_dir = workspace / "_hfstage"
