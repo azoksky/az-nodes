@@ -35,8 +35,8 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "PurgeVRAM": "Purge VRAM V1",
     "PurgeVRAM_V2": "Purge VRAM V2",
     "PathUploader": "Path Uploader",
-    "hf_hub_downloader":"HF Downloader"
-    "hf_list_downloader": "HF List Downloader"
+    "hf_hub_downloader":"HF Downloader",
+    "hf_list_downloader": "HF List Downloader",
     
 }
 
