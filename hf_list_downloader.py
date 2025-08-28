@@ -80,7 +80,6 @@ async def hf_list_read(request):
 
     # If path doesn't exist and looks like the default name, auto-fetch from URL (env wins)
     if not path.is_file() and path.name == "download_list.txt":
-        LIST_URL_ENV = (os.environ.get("DOWNLOAD_LIST") or "").strip() or LIST_URL_DEFAULT
         fetched = _atomic_fetch(LIST_URL_ENV, path)
         if fetched:
             print(f"missing list auto-fetched → {path}")
@@ -121,7 +120,6 @@ async def hf_list_refresh(request):
         body = {}
     relish = (body.get("path") or "download_list.txt").strip()
     path = _resolve_requested_path(relish)
-    LIST_URL_ENV = (os.environ.get("DOWNLOAD_LIST") or "").strip() or LIST_URL_DEFAULT
     url = LIST_URL_ENV  # env override if present, else default
     ok = _atomic_fetch(url, path)
     if not ok:
