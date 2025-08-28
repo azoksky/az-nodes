@@ -17,12 +17,6 @@ def run(cmd, cwd=None, check=True):
     print(f"→ {' '.join(cmd)}")
     return subprocess.run(cmd, cwd=cwd, check=check)
 
-def move_children(src: Path, dst: Path):
-    dst.mkdir(parents=True, exist_ok=True)
-    for item in src.iterdir():
-        target = dst / item.name
-        shutil.move(str(item), str(target))
-
 def clone(repo: str, dest: Path):
     if dest.exists():
         print(f"✓ already present: {dest}")
@@ -204,6 +198,13 @@ if __name__ == "__main__":
     #     "--use-sage-attention",
     #     "--fast"
     # ], cwd="/workspace")
+
+# def move_children(src: Path, dst: Path):
+#     dst.mkdir(parents=True, exist_ok=True)
+#     for item in src.iterdir():
+#         target = dst / item.name
+#         shutil.move(str(item), str(target))
+
 
 
 
