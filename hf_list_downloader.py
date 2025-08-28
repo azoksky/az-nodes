@@ -11,10 +11,9 @@ from server import PromptServer
 from huggingface_hub import hf_hub_download
 
 # ---------- Paths & env ----------
-WORKSPACE = Path(os.environ.get("WORKSPACE", "/workspace")).resolve()
-COMFY    = Path(os.environ.get("COMFYUI_PATH", str(WORKSPACE / "ComfyUI"))).resolve()
+COMFY    = Path(os.environ.get("COMFYUI_PATH", "./ComfyUI")).resolve()
+WORKSPACE = COMFY.parent.resolve()
 MODELS   = Path(os.environ.get("COMFYUI_MODEL_PATH", str(COMFY / "models"))).resolve()
-
 HF_TOKEN = os.environ.get("HF_READ_TOKEN") or None
 
 # ---------- Helpers ----------
