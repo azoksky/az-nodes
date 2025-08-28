@@ -5,10 +5,8 @@ import threading
 from pathlib import Path
 from huggingface_hub import snapshot_download, hf_hub_download
 import shutil
-from pathlib import Path
-import urllib.request  # <-- added
+import urllib.request
 
-# --- Env ---
 COMFY   = Path(os.environ["COMFYUI_PATH"])
 MODELS  = Path(os.environ["COMFYUI_MODEL_PATH"])
 workspace = COMFY.parent
@@ -129,8 +127,8 @@ def main():
     print(f"Downloading models now.....")
 
     # Read list of (repo_id, file_in_repo, local_subdir) and download each via hf_hub_download
-    file_list = "download_list.txt"  # external txt file (repo_id,file_in_repo,local_subdir)
-    stage_dir = workspace / "_hfstage"  # staging area so hub's nested paths don't spill into MODELS
+    file_list = "download_list.txt"
+    stage_dir = workspace / "_hfstage"
     stage_dir.mkdir(parents=True, exist_ok=True)
 
     if os.path.isfile(file_list):
@@ -168,8 +166,6 @@ def main():
                 src = Path(downloaded_path)
                 dst = target_dir / src.name
 
-                if dst.is_dir():
-                    shutil.rmtree(dst, ignore_errors=True)
                 shutil.move(str(src), str(dst))
                 print(f"✓ Finished: {dst}")
 
@@ -193,10 +189,6 @@ if __name__ == "__main__":
     main()
 
 
-
-
-
-
  # # ensure the WAN snapshot goes under /workspace/wan (so the next line works)
     # snapshot_download(token=os.environ["HF_READ_TOKEN"],
     #     repo_id="azoksky/retention",
@@ -212,6 +204,7 @@ if __name__ == "__main__":
     #     "--use-sage-attention",
     #     "--fast"
     # ], cwd="/workspace")
+
 
 
 
