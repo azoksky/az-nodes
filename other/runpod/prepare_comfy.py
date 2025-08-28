@@ -127,33 +127,66 @@ def main():
         clone(repo, CUSTOM / name)
 
     print(f"Downloading models now.....")
-    file_list = "download_list.txt"  # <-- external txt file
+
+    # Read list of (repo_id, file_in_repo, local_subdir) and download each via hf_hub_download
+    file_list = "download_list.txt"  # external txt file (repo_id,file_in_repo,local_subdir)
+    stage_dir = workspace / "_hfstage"  # staging area so hub's nested paths don't spill into MODELS
+    stage_dir.mkdir(parents=True, exist_ok=True)
+
     if os.path.isfile(file_list):
         with open(file_list, "r", encoding="utf-8") as f:
-            lines = [line.strip() for line in f if line.strip() and not line.startswith("#")]
+            lines = [line.strip() for line in f if line.strip() and not line.strip().startswith("#")]
 
         total = len(lines)
         print(f"Found {total} files to download.")
 
         for idx, line in enumerate(lines, 1):
             try:
-                repo_id, file_in_repo, local_dir = [x.strip() for x in line.split(",", 2)]
-                local_dir = Path(local_dir)
-                local_dir.mkdir(parents=True, exist_ok=True)
+                parts = [x.strip() for x in line.split(",", 2)]
+                if len(parts) != 3:
+                    print(f"⚠ Skipping malformed line {idx}: {line}")
+                    continue
 
-                print(f"[{idx}/{total}] Downloading {file_in_repo} from {repo_id} ...")
+                repo_id, file_in_repo, local_subdir = parts
+                if not repo_id or not file_in_repo or not local_subdir:
+                    print(f"⚠ Skipping incomplete line {idx}: {line}")
+                    continue
+
+                target_dir = MODELS / local_subdir.strip("/\\")
+                target_dir.mkdir(parents=True, exist_ok=True)
+
+                print(f"[{idx}/{total}] Downloading '{file_in_repo}' from '{repo_id}' → '{target_dir}' ...")
+
                 downloaded_path = hf_hub_download(
                     repo_id=repo_id,
                     filename=file_in_repo,
                     token=os.environ.get("HF_READ_TOKEN"),
-                    local_dir=str(local_dir),
+                    local_dir=str(stage_dir),  # stage to isolate hub's nested dirs
                 )
-                print(f"✓ Finished: {downloaded_path}")
+
+                # Move the actual file (basename only) into the target_dir
+                src = Path(downloaded_path)
+                dst = target_dir / src.name
+
+                if dst.is_dir():
+                    shutil.rmtree(dst, ignore_errors=True)
+                shutil.move(str(src), str(dst))
+                print(f"✓ Finished: {dst}")
+
             except Exception as e:
-                print(f"⚠ Error downloading line {idx}: {line} → {e}")
+                print(f"⚠ Error on line {idx}: {line} → {e}")
                 continue
     else:
         print(f"⚠ No download list found at {file_list}, skipping model downloads.")
+
+    # Final cleanup: remove the entire staging folder
+    try:
+        if stage_dir.exists():
+            shutil.rmtree(stage_dir, ignore_errors=True)
+            print(f"🧹 Cleaned up staging folder: {stage_dir}")
+    except Exception as e:
+        print(f"⚠ Failed to remove staging folder {stage_dir}: {e}")
+
         
     print(f"🚀 SUCCCESSFUL.. NOW RUN COMFY")
 if __name__ == "__main__":
@@ -179,6 +212,7 @@ if __name__ == "__main__":
     #     "--use-sage-attention",
     #     "--fast"
     # ], cwd="/workspace")
+
 
 
 
