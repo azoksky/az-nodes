@@ -10,6 +10,7 @@ import { api } from "../../scripts/api.js";
   .hfld-wrap { display:flex; flex-direction:column; gap:8px; width:100%; }
   .hfld-row { display:grid; grid-template-columns: 22px 1fr; align-items:center;
               padding:6px 8px; border:1px solid #333; border-radius:8px; background:#1f1f1f; }
+  .hfld-row div { background: none !important; }
   .hfld-row.downloading { animation: hfldPulse 1.2s ease-in-out infinite alternate; background: rgba(80,140,255,0.15); }
   .hfld-row.done { background: rgba(60,200,120,0.18); border-color:#3dc878; }
   .hfld-row.error { background: rgba(220,80,80,0.18); border-color:#e07070; }
