@@ -154,8 +154,17 @@ def main():
                 continue
     else:
         print(f"⚠ No download list found at {file_list}, skipping model downloads.")
+        
+    print(f"🚀 SUCCCESSFUL.. NOW RUN COMFY")
+if __name__ == "__main__":
+    main()
 
-    # # ensure the WAN snapshot goes under /workspace/wan (so the next line works)
+
+
+
+
+
+ # # ensure the WAN snapshot goes under /workspace/wan (so the next line works)
     # snapshot_download(token=os.environ["HF_READ_TOKEN"],
     #     repo_id="azoksky/retention",
     #     allow_patterns=["*wan*"],
@@ -163,7 +172,6 @@ def main():
     
     # move_children(workspace / "wan", MODELS)
 
-    print(f"🚀 SUCCCESSFUL.. NOW RUN COMFY")
     # subprocess.Popen([
     #     "python", "-B", "./ComfyUI/main.py",
     #     "--listen",
@@ -171,9 +179,6 @@ def main():
     #     "--use-sage-attention",
     #     "--fast"
     # ], cwd="/workspace")
-
-if __name__ == "__main__":
-    main()
 
 
 
