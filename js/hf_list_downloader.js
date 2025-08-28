@@ -223,7 +223,7 @@ app.registerExtension({
       btnDownload.addEventListener("click", downloadSelected);
 
       // Node canvas sizing
-      this.size = [550, 500];
+      this.size = [580, 500];
 
       return r;
     };
