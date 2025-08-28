@@ -54,6 +54,10 @@ app.registerExtension({
       btnRead.className = "hfld-btn";
       btnRead.textContent = "Read";
 
+      const btnRefresh = document.createElement("button");
+      btnRefresh.className = "hfld-btn";
+      btnRefresh.textContent = "Refresh";
+
       const btnSelectAll = document.createElement("button");
       btnSelectAll.className = "hfld-btn";
       btnSelectAll.textContent = "Select All";
@@ -66,7 +70,7 @@ app.registerExtension({
       btnDownload.className = "hfld-btn";
       btnDownload.textContent = "Download Selected";
 
-      bar.append(pathInput, btnRead, btnSelectAll, btnClear, btnDownload);
+      bar.append(pathInput, btnRead, btnRefresh, btnSelectAll, btnClear, btnDownload);
 
       // List
       const list = document.createElement("div");
@@ -108,7 +112,7 @@ app.registerExtension({
           lab.textContent = `${it.repo_id}, ${it.file_in_repo}, ${it.local_subdir}`;
           const timeEl = document.createElement("div");
           timeEl.className = "hfld-time";
-          timeEl.textContent = ""; // filled after download
+          timeEl.textContent = "";
           row.append(cb, lab, timeEl);
           list.appendChild(row);
           it.el = row; it.cb = cb; it.timeEl = timeEl;
@@ -120,7 +124,7 @@ app.registerExtension({
         this.properties.list_path = p;
         setMsg("Reading list…");
         try {
-          // server now auto-fetches to /workspace if 'download_list.txt' is missing
+          // Server will auto-fetch from DOWNLOAD_LIST (env) or default if missing locally
           const resp = await api.fetchApi(`/hf_list/read?path=${encodeURIComponent(p)}`);
           const data = await resp.json();
           if (!resp.ok || !data.ok) throw new Error(data?.error || `HTTP ${resp.status}`);
@@ -131,6 +135,27 @@ app.registerExtension({
           items = [];
           render();
           setMsg(e.message || "Failed to read list.", true);
+        }
+      };
+
+      const refreshList = async () => {
+        const p = (pathInput.value || "").trim() || "download_list.txt";
+        setMsg("Refreshing list from internet…");
+        btnRefresh.disabled = true;
+        try {
+          // Force fetch from internet (uses DOWNLOAD_LIST env if present)
+          const resp = await api.fetchApi("/hf_list/refresh", {
+            method: "POST",
+            body: JSON.stringify({ path: p })
+          });
+          const data = await resp.json();
+          if (!resp.ok || !data.ok) throw new Error(data?.error || `HTTP ${resp.status}`);
+          setMsg(`Refreshed from ${data.url} → ${data.file}.`);
+          await readList(); // re-render with fresh content
+        } catch (e) {
+          setMsg(e.message || "Refresh failed.", true);
+        } finally {
+          btnRefresh.disabled = false;
         }
       };
 
@@ -173,6 +198,7 @@ app.registerExtension({
         setMsg(`Downloading ${chosen.length} item(s)…`);
         btnDownload.disabled = true;
         btnRead.disabled = true;
+        btnRefresh.disabled = true;
         let okCount = 0, errCount = 0;
         const batchStart = performance.now();
 
@@ -184,18 +210,20 @@ app.registerExtension({
         const totalMs = performance.now() - batchStart;
         btnDownload.disabled = false;
         btnRead.disabled = false;
+        btnRefresh.disabled = false;
         if (errCount) setMsg(`Finished with ${okCount} success, ${errCount} error(s) in ${fmtTime(totalMs)}.`, true);
         else setMsg(`All ${okCount} item(s) downloaded in ${fmtTime(totalMs)}.`);
       };
 
       // Wire up
       btnRead.addEventListener("click", readList);
+      btnRefresh.addEventListener("click", refreshList);
       btnSelectAll.addEventListener("click", selectAll);
       btnClear.addEventListener("click", clearSel);
       btnDownload.addEventListener("click", downloadSelected);
 
       // Node canvas sizing
-      this.size = [600, 500];
+      this.size = [550, 500];
 
       return r;
     };
