@@ -128,48 +128,63 @@ def main():
         ("https://github.com/nunchaku-tech/ComfyUI-nunchaku.git",           "ComfyUI-nunchaku"),
     ]:
         clone(repo, CUSTOM / name)
-    if(DOWNLOAD_MODELS):
+
+    # ---- FIXED DOWNLOAD_MODELS BLOCK ----
+    if DOWNLOAD_MODELS:
         try:
-            url="https://raw.githubusercontent.com/azoksky/az-nodes/refs/heads/main/other/runpod/download_list.txt"
+            url = "https://raw.githubusercontent.com/azoksky/az-nodes/refs/heads/main/other/runpod/download_list.txt"
             file_list_path = workspace / "download_list.txt"
             tmp = file_list_path.with_suffix(file_list_path.suffix + ".part")
+
+            # Download the list
             with urllib.request.urlopen(url, timeout=30) as r, open(tmp, "wb") as f:
                 shutil.copyfileobj(r, f)
             tmp.replace(file_list_path)
-            print(f"✓ downloaded: {dest}  ← {url}")
-            print(f"Downloading models now.....")
+            print(f"✓ downloaded: {file_list_path}  ← {url}")
+            print("Downloading models now.....")
+
             stage_dir = workspace / "_hfstage"
             stage_dir.mkdir(parents=True, exist_ok=True)
-            if os.path.isfile(file_list):
-                    with open(file_list, "r", encoding="utf-8") as f:
-                        lines = [line.strip() for line in f if line.strip() and not line.strip().startswith("#")]
-                    total = len(lines)
-                    print(f"Found {total} files to download.")
-                    for idx, line in enumerate(lines, 1):
-                        try:
-                            parts = [x.strip() for x in line.split(",", 2)]
-                            if len(parts) != 3:
-                                print(f"⚠ Skipping malformed line {idx}: {line}")
-                                continue
-                            repo_id, file_in_repo, local_subdir = parts
-                            if not repo_id or not file_in_repo or not local_subdir:
-                                print(f"⚠ Skipping incomplete line {idx}: {line}")
-                                    continue 
-                                target_dir = MODELS / local_subdir.strip("/\\")
-                                target_dir.mkdir(parents=True, exist_ok=True)
-                                print(f"[{idx}/{total}] Downloading '{file_in_repo}' from '{repo_id}' → '{target_dir}' ...")
-                                downloaded_path = hf_hub_download(repo_id=repo_id,filename=file_in_repo,
-                                                                    token=os.environ.get("HF_READ_TOKEN"), local_dir=str(stage_dir) )
-                                # Move the actual file (basename only) into the target_dir
-                                src = Path(downloaded_path)
-                                dst = target_dir / src.name
-                                shutil.move(str(src), str(dst))  # ← actually move it
-                                print(f"✓ Finished: {dst}")
-                        except Exception as e:
-                            print(f"⚠ Error on line {idx}: {line} → {e}")
+
+            if file_list_path.is_file():
+                with file_list_path.open("r", encoding="utf-8") as f:
+                    lines = [line.strip() for line in f if line.strip() and not line.strip().startswith("#")]
+                total = len(lines)
+                print(f"Found {total} files to download.")
+
+                for idx, line in enumerate(lines, 1):
+                    try:
+                        parts = [x.strip() for x in line.split(",", 2)]
+                        if len(parts) != 3:
+                            print(f"⚠ Skipping malformed line {idx}: {line}")
                             continue
+
+                        repo_id, file_in_repo, local_subdir = parts
+                        if not repo_id or not file_in_repo or not local_subdir:
+                            print(f"⚠ Skipping incomplete line {idx}: {line}")
+                            continue
+
+                        target_dir = MODELS / local_subdir.strip("/\\")
+                        target_dir.mkdir(parents=True, exist_ok=True)
+
+                        print(f"[{idx}/{total}] Downloading '{file_in_repo}' from '{repo_id}' → '{target_dir}' ...")
+                        downloaded_path = hf_hub_download(
+                            repo_id=repo_id,
+                            filename=file_in_repo,
+                            token=os.environ.get("HF_READ_TOKEN"),
+                            local_dir=str(stage_dir),
+                        )
+
+                        src = Path(downloaded_path)
+                        dst = target_dir / src.name
+                        shutil.move(str(src), str(dst))
+                        print(f"✓ Finished: {dst}")
+
+                    except Exception as e:
+                        print(f"⚠ Error on line {idx}: {line} → {e}")
+                        continue
             else:
-                print(f"⚠ No download list found at {file_list}, skipping model downloads.")      
+                print(f"⚠ No download list found at {file_list_path}, skipping model downloads.")
         except Exception as e:
             print(f"⚠ Failed to fetch or process download list: {e}")
         finally:
@@ -177,35 +192,9 @@ def main():
             if stage_dir.exists():
                 shutil.rmtree(stage_dir, ignore_errors=True)
                 print(f"🧹 Cleaned up staging folder: {stage_dir}")
+    # ---- END FIXED BLOCK ----
             
-    print(f"🚀 SUCCESSFUL.. NOW RUN COMFY")
+    print("🚀 SUCCESSFUL.. NOW RUN COMFY")
+
 if __name__ == "__main__":
     main()
-
-
- # # ensure the WAN snapshot goes under /workspace/wan (so the next line works)
-    # snapshot_download(token=os.environ["HF_READ_TOKEN"],
-    #     repo_id="azoksky/retention",
-    #     allow_patterns=["*wan*"],
-    #     local_dir=str(workspace))
-    
-    # move_children(workspace / "wan", MODELS)
-
-    # subprocess.Popen([
-    #     "python", "-B", "./ComfyUI/main.py",
-    #     "--listen",
-    #     "--preview-method", "latent2rgb",
-    #     "--use-sage-attention",
-    #     "--fast"
-    # ], cwd="/workspace")
-
-# def move_children(src: Path, dst: Path):
-#     dst.mkdir(parents=True, exist_ok=True)
-#     for item in src.iterdir():
-#         target = dst / item.name
-#         shutil.move(str(item), str(target))
-
-
-
-
-
