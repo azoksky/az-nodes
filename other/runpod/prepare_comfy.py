@@ -12,9 +12,13 @@ MODELS  = Path(os.environ["COMFYUI_MODEL_PATH"])
 workspace = COMFY.parent
 CUSTOM  = COMFY / "custom_nodes"
 USER    = COMFY / "user" / "default"
-DOWNLOAD_MODELS = False
-if(os.environ["DOWNLOAD_MODELS"])
-    DOWNLOAD_MODELS   = os.environ["DOWNLOAD_MODELS"]
+DOWNLOAD_MODELS = _env_flag("DOWNLOAD_MODELS", default=False)
+
+def _env_flag(name: str, default: bool = False) -> bool:
+    val = os.getenv(name)
+    if val is None:
+        return default
+    return str(val).strip().lower() in ("1", "true", "yes", "y", "on")
 
 def run(cmd, cwd=None, check=True):
     print(f"→ {' '.join(cmd)}")
@@ -57,7 +61,10 @@ def bg_install_impact():
     for url, dest in downloads:
         if not _fetch(url, dest):
             all_ok = False
-    print(f"Successfully copied all settings..hurray")
+    if(all_ok):
+        print(f"Successfully Applied all settings.")
+    else:
+        print(f"Failed to copy all settings.")
     targets = [
         CUSTOM / "ComfyUI-Impact-Pack" / "install.py",
         CUSTOM / "ComfyUI-Impact-Subpack" / "install.py",
