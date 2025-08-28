@@ -3,7 +3,7 @@ import os
 import subprocess
 import threading
 from pathlib import Path
-from huggingface_hub import snapshot_download, hf_hub_download
+from huggingface_hub import hf_hub_download
 import shutil
 import urllib.request
 
@@ -12,13 +12,14 @@ MODELS  = Path(os.environ["COMFYUI_MODEL_PATH"])
 workspace = COMFY.parent
 CUSTOM  = COMFY / "custom_nodes"
 USER    = COMFY / "user" / "default"
-DOWNLOAD_MODELS = _env_flag("DOWNLOAD_MODELS", default=False)
 
 def _env_flag(name: str, default: bool = False) -> bool:
     val = os.getenv(name)
     if val is None:
         return default
     return str(val).strip().lower() in ("1", "true", "yes", "y", "on")
+    
+DOWNLOAD_MODELS = _env_flag("DOWNLOAD_MODELS", default=False)
 
 def run(cmd, cwd=None, check=True):
     print(f"→ {' '.join(cmd)}")
@@ -184,7 +185,7 @@ def main():
           print(f"⚠ Failed to remove staging folder {stage_dir}: {e}")
 
         
-    print(f"🚀 SUCCCESSFUL.. NOW RUN COMFY")
+    print(f"🚀 SUCCESSFUL.. NOW RUN COMFY")
 if __name__ == "__main__":
     main()
 
