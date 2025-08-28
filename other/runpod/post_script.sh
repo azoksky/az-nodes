@@ -2,8 +2,7 @@
 set -Eeuo pipefail
 
 # Workspace location
-WORKSPACE="/workspace"
-
+WORKSPACE="${WORKSPACE:-/workspace}"
 # Ensure workspace exists
 mkdir -p "$WORKSPACE"
 
