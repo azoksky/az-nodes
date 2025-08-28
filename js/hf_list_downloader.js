@@ -68,7 +68,7 @@ app.registerExtension({
 
       const btnDownload = document.createElement("button");
       btnDownload.className = "hfld-btn";
-      btnDownload.textContent = "Download Selected";
+      btnDownload.textContent = "Download";
 
       bar.append(pathInput, btnRead, btnRefresh, btnSelectAll, btnClear, btnDownload);
 
@@ -223,7 +223,7 @@ app.registerExtension({
       btnDownload.addEventListener("click", downloadSelected);
 
       // Node canvas sizing
-      this.size = [580, 500];
+      this.size = [570, 500];
 
       return r;
     };
