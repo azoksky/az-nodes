@@ -18,8 +18,9 @@ WORKSPACE = COMFY.parent.resolve()
 MODELS    = Path(os.environ.get("COMFYUI_MODEL_PATH", str(COMFY / "models"))).resolve()
 HF_TOKEN  = os.environ.get("HF_READ_TOKEN") or None
 
-# Default list URL (used when file is missing and user asks for 'download_list.txt')
+# Default list URL; can be overridden by env var DOWNLOAD_LIST
 LIST_URL_DEFAULT = "https://raw.githubusercontent.com/azoksky/az-nodes/refs/heads/main/other/runpod/download_list.txt"
+LIST_URL_ENV = (os.environ.get("DOWNLOAD_LIST") or "").strip() or LIST_URL_DEFAULT
 
 # ---------- Helpers ----------
 def _clean_parts(line: str) -> Tuple[str, str, str] | None:
@@ -32,7 +33,7 @@ def _clean_parts(line: str) -> Tuple[str, str, str] | None:
         return None
     return (a, b, c)
 
-def _read_list_file(p: Path) -> List[Tuple[str, str, str]]:
+def _read_list_file(p: Path):
     if not p.is_file():
         raise FileNotFoundError(f"No download list found at {p}")
     out = []
@@ -73,16 +74,15 @@ def _resolve_requested_path(relish: str) -> Path:
 # ---------- API: read ----------
 @PromptServer.instance.routes.get("/hf_list/read")
 async def hf_list_read(request):
-    # Optional ?path=... (defaults to "download_list.txt", but we prefer WORKSPACE location)
+    # Optional ?path=... (defaults to "download_list.txt", prefer WORKSPACE location)
     relish = (request.query.get("path") or "download_list.txt").strip()
     path = _resolve_requested_path(relish)
 
-    # If path doesn't exist and looks like the default name, auto-fetch from repo
+    # If path doesn't exist and looks like the default name, auto-fetch from URL (env wins)
     if not path.is_file() and path.name == "download_list.txt":
-        fetched = _atomic_fetch(LIST_URL_DEFAULT, path)
+        fetched = _atomic_fetch(LIST_URL_ENV, path)
         if fetched:
-            msg = f"missing list auto-fetched → {path}"
-            print(msg)
+            print(f"missing list auto-fetched → {path}")
 
     try:
         items = _read_list_file(path)
@@ -106,6 +106,27 @@ async def hf_list_read(request):
     except Exception as e:
         return web.json_response({"ok": False, "error": f"Failed to read list: {e}"}, status=500)
 
+# ---------- NEW: force-refresh (always fetch from internet & overwrite local) ----------
+@PromptServer.instance.routes.post("/hf_list/refresh")
+async def hf_list_refresh(request):
+    """
+    Body:
+      { "path": "download_list.txt" }   // path is optional; defaults to WORKSPACE/download_list.txt
+    Uses DOWNLOAD_LIST env var if set; otherwise LIST_URL_DEFAULT.
+    """
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    relish = (body.get("path") or "download_list.txt").strip()
+    path = _resolve_requested_path(relish)
+
+    url = LIST_URL_ENV  # env override if present, else default
+    ok = _atomic_fetch(url, path)
+    if not ok:
+        return web.json_response({"ok": False, "error": f"Failed to fetch from {url}"}, status=502)
+    return web.json_response({"ok": True, "file": str(path), "url": url})
+
 # ---------- API: download one ----------
 @PromptServer.instance.routes.post("/hf_list/download")
 async def hf_list_download(request):
@@ -125,11 +146,9 @@ async def hf_list_download(request):
     if not repo_id or not file_in_repo or not local_subdir:
         return web.json_response({"ok": False, "error": "Invalid or incomplete line data."}, status=400)
 
-    # staging directory to keep hub's content neat
     stage_dir = (WORKSPACE / "_hfstage")
     stage_dir.mkdir(parents=True, exist_ok=True)
 
-    # final target directory inside COMFYUI_MODEL_PATH/local_subdir
     target_dir = (MODELS / local_subdir.strip("/\\"))
     try:
         target_dir.mkdir(parents=True, exist_ok=True)
@@ -137,18 +156,15 @@ async def hf_list_download(request):
         return web.json_response({"ok": False, "error": f"Cannot create target dir: {e}"}, status=400)
 
     try:
-        # Download to staging via huggingface_hub
         downloaded = hf_hub_download(
             repo_id=repo_id,
             filename=file_in_repo,
             token=HF_TOKEN,
             local_dir=str(stage_dir),
         )
-        # Move the actual file (basename) into target_dir
         src = Path(downloaded)
         dst = (target_dir / src.name)
         shutil.move(str(src), str(dst))
-        # clean up empty parent folders that HF may create inside stage_dir
         try:
             if stage_dir.exists():
                 shutil.rmtree(stage_dir, ignore_errors=True)
