@@ -131,57 +131,53 @@ def main():
     if(DOWNLOAD_MODELS):
         try:
             url="https://raw.githubusercontent.com/azoksky/az-nodes/refs/heads/main/other/runpod/download_list.txt"
-            dest=workspace
-            tmp = dest.with_suffix(dest.suffix + ".part")
-            with urllib.request.urlopen(url, timeout=timeout) as r, open(tmp, "wb") as f:
+            file_list_path = workspace / "download_list.txt"
+            tmp = file_list_path.with_suffix(file_list_path.suffix + ".part")
+            with urllib.request.urlopen(url, timeout=30) as r, open(tmp, "wb") as f:
                 shutil.copyfileobj(r, f)
-                tmp.replace(dest)
-                print(f"✓ downloaded: {dest}  ← {url}")
-                print(f"Downloading models now.....")
-                file_list_path = workspace / "download_list.txt"
-                stage_dir = workspace / "_hfstage"
-                stage_dir.mkdir(parents=True, exist_ok=True)
-                if os.path.isfile(file_list):
-                      with open(file_list, "r", encoding="utf-8") as f:
-                          lines = [line.strip() for line in f if line.strip() and not line.strip().startswith("#")]
-                          total = len(lines)
-                          print(f"Found {total} files to download.")
-                          for idx, line in enumerate(lines, 1):
-                              try:
-                                  parts = [x.strip() for x in line.split(",", 2)]
-                                  if len(parts) != 3:
-                                      print(f"⚠ Skipping malformed line {idx}: {line}")
-                                      continue
-                            
-
-                                  repo_id, file_in_repo, local_subdir = parts
-                                  if not repo_id or not file_in_repo or not local_subdir:
-                                      print(f"⚠ Skipping incomplete line {idx}: {line}")
-                                      continue 
-                                  target_dir = MODELS / local_subdir.strip("/\\")
-                                  target_dir.mkdir(parents=True, exist_ok=True)
-                                  print(f"[{idx}/{total}] Downloading '{file_in_repo}' from '{repo_id}' → '{target_dir}' ...")
-                                  downloaded_path = hf_hub_download(repo_id=repo_id,filename=file_in_repo,
+            tmp.replace(file_list_path)
+            print(f"✓ downloaded: {dest}  ← {url}")
+            print(f"Downloading models now.....")
+            stage_dir = workspace / "_hfstage"
+            stage_dir.mkdir(parents=True, exist_ok=True)
+            if os.path.isfile(file_list):
+                    with open(file_list, "r", encoding="utf-8") as f:
+                        lines = [line.strip() for line in f if line.strip() and not line.strip().startswith("#")]
+                    total = len(lines)
+                    print(f"Found {total} files to download.")
+                    for idx, line in enumerate(lines, 1):
+                        try:
+                            parts = [x.strip() for x in line.split(",", 2)]
+                            if len(parts) != 3:
+                                print(f"⚠ Skipping malformed line {idx}: {line}")
+                                continue
+                            repo_id, file_in_repo, local_subdir = parts
+                            if not repo_id or not file_in_repo or not local_subdir:
+                                print(f"⚠ Skipping incomplete line {idx}: {line}")
+                                    continue 
+                                target_dir = MODELS / local_subdir.strip("/\\")
+                                target_dir.mkdir(parents=True, exist_ok=True)
+                                print(f"[{idx}/{total}] Downloading '{file_in_repo}' from '{repo_id}' → '{target_dir}' ...")
+                                downloaded_path = hf_hub_download(repo_id=repo_id,filename=file_in_repo,
                                                                     token=os.environ.get("HF_READ_TOKEN"), local_dir=str(stage_dir) )
-                                  # Move the actual file (basename only) into the target_dir
-                                  src = Path(downloaded_path)
-                                  dst = target_dir / src.name
-                              except Exception as e:
-                                  print(f"⚠ Error on line {idx}: {line} → {e}")
-                                  continue
-
-                else:
-                    print(f"⚠ No download list found at {file_list}, skipping model downloads.")
-                # Final cleanup: remove the entire staging folder
-                try:
-                    if stage_dir.exists():
-                        shutil.rmtree(stage_dir, ignore_errors=True)
-                        print(f"🧹 Cleaned up staging folder: {stage_dir}")
-                except Exception as e:
-                    print(f"⚠ Failed to remove staging folder {stage_dir}: {e}")       
+                                # Move the actual file (basename only) into the target_dir
+                                src = Path(downloaded_path)
+                                dst = target_dir / src.name
+                                shutil.move(str(src), str(dst))  # ← actually move it
+                                print(f"✓ Finished: {dst}")
+                        except Exception as e:
+                            print(f"⚠ Error on line {idx}: {line} → {e}")
+                            continue
+            else:
+                print(f"⚠ No download list found at {file_list}, skipping model downloads.")      
         except Exception as e:
-                print(f"⚠ attempt {i}/{attempts} failed for {url}: {e}")
-                tmp.unlink(missing_ok=True)    
+            print(f"⚠ Failed to fetch or process download list: {e}")
+        finally:
+            stage_dir = workspace / "_hfstage"
+            if stage_dir.exists():
+                shutil.rmtree(stage_dir, ignore_errors=True)
+                print(f"🧹 Cleaned up staging folder: {stage_dir}")
+            
     print(f"🚀 SUCCESSFUL.. NOW RUN COMFY")
 if __name__ == "__main__":
     main()
