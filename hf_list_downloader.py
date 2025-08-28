@@ -19,7 +19,7 @@ WORKSPACE = COMFY.parent.resolve()
 print(f"WORKSPACE : {WORKSPACE}")
 MODELS    = Path(os.environ.get("COMFYUI_MODEL_PATH", str(COMFY / "models"))).resolve()
 print(f"MODELS : {MODELS}")
-HF_TOKEN  = os.environ.get("HF_READ_TOKEN") or None
+HF_TOKEN  = os.environ.get("HF_READ_TOKEN")
 print(f"HF_TOKEN : {HF_TOKEN}")
 
 # Default list URL; can be overridden by env var DOWNLOAD_LIST
