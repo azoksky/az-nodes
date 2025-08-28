@@ -114,16 +114,11 @@ async def hf_list_download(request):
         shutil.move(str(src), str(dst))
         # clean up empty parent folders that HF may create inside stage_dir
         try:
-            parent = src.parent
-            while parent != stage_dir and parent.exists():
-                if not any(parent.iterdir()):
-                    parent.rmdir()
-                    parent = parent.parent
-                else:
-                    break
-        except Exception:
-            pass
-
+            if stage_dir.exists():
+                shutil.rmtree(stage_dir, ignore_errors=True)
+                print(f"🧹 Cleaned up staging folder: {stage_dir}")
+        except Exception as e:
+            print(f"⚠ Failed to remove staging folder {stage_dir}: {e}")
         return web.json_response({
             "ok": True,
             "dst": str(dst),
