@@ -9,12 +9,17 @@ from typing import List, Tuple
 from aiohttp import web
 from server import PromptServer
 from huggingface_hub import hf_hub_download
+import urllib.request
+from urllib.error import URLError, HTTPError
 
 # ---------- Paths & env ----------
-COMFY    = Path(os.environ.get("COMFYUI_PATH", "./ComfyUI")).resolve()
+COMFY     = Path(os.environ.get("COMFYUI_PATH", "./ComfyUI")).resolve()
 WORKSPACE = COMFY.parent.resolve()
-MODELS   = Path(os.environ.get("COMFYUI_MODEL_PATH", str(COMFY / "models"))).resolve()
-HF_TOKEN = os.environ.get("HF_READ_TOKEN") or None
+MODELS    = Path(os.environ.get("COMFYUI_MODEL_PATH", str(COMFY / "models"))).resolve()
+HF_TOKEN  = os.environ.get("HF_READ_TOKEN") or None
+
+# Default list URL (used when file is missing and user asks for 'download_list.txt')
+LIST_URL_DEFAULT = "https://raw.githubusercontent.com/azoksky/az-nodes/refs/heads/main/other/runpod/download_list.txt"
 
 # ---------- Helpers ----------
 def _clean_parts(line: str) -> Tuple[str, str, str] | None:
@@ -41,12 +46,44 @@ def _read_list_file(p: Path) -> List[Tuple[str, str, str]]:
                 out.append(tup)
     return out
 
+def _atomic_fetch(url: str, dest: Path, timeout: int = 30, attempts: int = 3) -> bool:
+    """Download URL to dest atomically with small retry."""
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    tmp = dest.with_suffix(dest.suffix + ".part")
+    for i in range(1, attempts + 1):
+        try:
+            with urllib.request.urlopen(url, timeout=timeout) as r, open(tmp, "wb") as f:
+                shutil.copyfileobj(r, f)
+            tmp.replace(dest)
+            return True
+        except Exception:
+            try:
+                tmp.unlink(missing_ok=True)
+            except Exception:
+                pass
+    return False
+
+def _resolve_requested_path(relish: str) -> Path:
+    """If the user passes a bare 'download_list.txt', prefer WORKSPACE/ that file."""
+    p = (Path(relish).expanduser())
+    if p.name == "download_list.txt" and ("/" not in relish and "\\" not in relish):
+        return (WORKSPACE / "download_list.txt").resolve()
+    return p.resolve()
+
 # ---------- API: read ----------
 @PromptServer.instance.routes.get("/hf_list/read")
 async def hf_list_read(request):
-    # Optional ?path=... (defaults to "download_list.txt" relative to current working dir)
-    rel = (request.query.get("path") or "download_list.txt").strip()
-    path = Path(rel).expanduser().resolve()
+    # Optional ?path=... (defaults to "download_list.txt", but we prefer WORKSPACE location)
+    relish = (request.query.get("path") or "download_list.txt").strip()
+    path = _resolve_requested_path(relish)
+
+    # If path doesn't exist and looks like the default name, auto-fetch from repo
+    if not path.is_file() and path.name == "download_list.txt":
+        fetched = _atomic_fetch(LIST_URL_DEFAULT, path)
+        if fetched:
+            msg = f"missing list auto-fetched → {path}"
+            print(msg)
+
     try:
         items = _read_list_file(path)
         payload = {
@@ -81,9 +118,9 @@ async def hf_list_download(request):
       }
     """
     body = await request.json()
-    repo_id     = (body.get("repo_id") or "").strip()
-    file_in_repo= (body.get("file_in_repo") or "").strip()
-    local_subdir= (body.get("local_subdir") or "").strip()
+    repo_id      = (body.get("repo_id") or "").strip()
+    file_in_repo = (body.get("file_in_repo") or "").strip()
+    local_subdir = (body.get("local_subdir") or "").strip()
 
     if not repo_id or not file_in_repo or not local_subdir:
         return web.json_response({"ok": False, "error": "Invalid or incomplete line data."}, status=400)
@@ -107,7 +144,6 @@ async def hf_list_download(request):
             token=HF_TOKEN,
             local_dir=str(stage_dir),
         )
-
         # Move the actual file (basename) into target_dir
         src = Path(downloaded)
         dst = (target_dir / src.name)
