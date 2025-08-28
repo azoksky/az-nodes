@@ -15,7 +15,7 @@ import { api } from "../../scripts/api.js";
   .hfld-row.done { background: rgba(60,200,120,0.18); border-color:#3dc878; }
   .hfld-row.error { background: rgba(220,80,80,0.18); border-color:#e07070; }
   @keyframes hfldPulse { from{ background: rgba(80,140,255,0.10); } to{ background: rgba(80,140,255,0.25); } }
-  .hfld-list { max-height: 220px; overflow:auto; display:flex; flex-direction:column; gap:6px; }
+  .hfld-list { flex: 1; overflow:auto; display:flex; flex-direction:column; gap:6px; }
   .hfld-toolbar { display:flex; gap:6px; flex-wrap:wrap; }
   .hfld-btn, .hfld-input { height:26px; border-radius:6px; border:1px solid #444; background:#2a2a2a; color:#ddd; padding:0 8px; }
   .hfld-btn { cursor:pointer; }
@@ -78,7 +78,7 @@ app.registerExtension({
       wrap.append(bar, list, msg);
 
       const widget = this.addDOMWidget("hfld_ui", "HF List Downloader", wrap);
-      widget.computeSize = () => [this.size[0] - 20, 300];
+      widget.computeSize = () => [this.size[0] - 20, 440];
 
       // State
       let items = []; // {id, repo_id, file_in_repo, local_subdir, el, cb}
@@ -173,7 +173,7 @@ app.registerExtension({
       btnDownload.addEventListener("click", downloadSelected);
 
       // Node canvas sizing
-      this.size = [520, 360];
+      this.size = [520, 500];
 
       return r;
     };
