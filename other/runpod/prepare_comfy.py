@@ -138,7 +138,7 @@ def main():
                 tmp.replace(dest)
                 print(f"✓ downloaded: {dest}  ← {url}")
                 print(f"Downloading models now.....")
-                file_list = "download_list.txt"
+                file_list_path = workspace / "download_list.txt"
                 stage_dir = workspace / "_hfstage"
                 stage_dir.mkdir(parents=True, exist_ok=True)
                 if os.path.isfile(file_list):
