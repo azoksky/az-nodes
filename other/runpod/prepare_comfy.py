@@ -12,7 +12,9 @@ MODELS  = Path(os.environ["COMFYUI_MODEL_PATH"])
 workspace = COMFY.parent
 CUSTOM  = COMFY / "custom_nodes"
 USER    = COMFY / "user" / "default"
-DOWNLOAD_MODELS   = os.environ["DOWNLOAD_MODELS"]
+DOWNLOAD_MODELS = False
+if(os.environ["DOWNLOAD_MODELS"])
+    DOWNLOAD_MODELS   = os.environ["DOWNLOAD_MODELS"]
 
 def run(cmd, cwd=None, check=True):
     print(f"→ {' '.join(cmd)}")
@@ -151,9 +153,7 @@ def main():
                   downloaded_path = hf_hub_download(
                       repo_id=repo_id,
                       filename=file_in_repo,
-                      token=os.environ.get("HF_READ_TOKEN"),
-                    l  ocal_dir=str(stage_dir),  # stage to isolate hub's nested dirs
-                  )
+                      token=os.environ.get("HF_READ_TOKEN"), local_dir=str(stage_dir) )
 
                   # Move the actual file (basename only) into the target_dir
                   src = Path(downloaded_path)
