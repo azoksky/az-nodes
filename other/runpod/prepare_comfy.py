@@ -127,13 +127,41 @@ def main():
         clone(repo, CUSTOM / name)
 
     print(f"Downloading models now.....")
-    # ensure the WAN snapshot goes under /workspace/wan (so the next line works)
-    snapshot_download(token=os.environ["HF_READ_TOKEN"],
-        repo_id="azoksky/retention",
-        allow_patterns=["*wan*"],
-        local_dir=str(workspace))
+    file_list = "download_list.txt"  # <-- external txt file
+    if os.path.isfile(file_list):
+        with open(file_list, "r", encoding="utf-8") as f:
+            lines = [line.strip() for line in f if line.strip() and not line.startswith("#")]
+
+        total = len(lines)
+        print(f"Found {total} files to download.")
+
+        for idx, line in enumerate(lines, 1):
+            try:
+                repo_id, file_in_repo, local_dir = [x.strip() for x in line.split(",", 2)]
+                local_dir = Path(local_dir)
+                local_dir.mkdir(parents=True, exist_ok=True)
+
+                print(f"[{idx}/{total}] Downloading {file_in_repo} from {repo_id} ...")
+                downloaded_path = hf_hub_download(
+                    repo_id=repo_id,
+                    filename=file_in_repo,
+                    token=os.environ.get("HF_READ_TOKEN"),
+                    local_dir=str(local_dir),
+                )
+                print(f"✓ Finished: {downloaded_path}")
+            except Exception as e:
+                print(f"⚠ Error downloading line {idx}: {line} → {e}")
+                continue
+    else:
+        print(f"⚠ No download list found at {file_list}, skipping model downloads.")
+
+    # # ensure the WAN snapshot goes under /workspace/wan (so the next line works)
+    # snapshot_download(token=os.environ["HF_READ_TOKEN"],
+    #     repo_id="azoksky/retention",
+    #     allow_patterns=["*wan*"],
+    #     local_dir=str(workspace))
     
-    move_children(workspace / "wan", MODELS)
+    # move_children(workspace / "wan", MODELS)
 
     print(f"🚀 SUCCCESSFUL.. NOW RUN COMFY")
     # subprocess.Popen([
@@ -146,5 +174,6 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
