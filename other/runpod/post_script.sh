@@ -11,7 +11,7 @@ tr '\0' '\n' < /proc/1/environ | awk '{
 }' > /etc/profile.d/10-container-env.sh
 }
 
-
+ensure_full_env_for_ssh
 COMFYUI_PATH="${COMFYUI_PATH:-/workspace/ComfyUI}"
 WORKSPACE="$(dirname "$COMFYUI_PATH")"
 PY_URL="https://raw.githubusercontent.com/azoksky/az-nodes/refs/heads/main/other/runpod/prepare_comfy.py"
