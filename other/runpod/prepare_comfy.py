@@ -6,6 +6,7 @@ from pathlib import Path
 from huggingface_hub import hf_hub_download
 import shutil
 import urllib.request
+import sys
 
 COMFY   = Path(os.environ["COMFYUI_PATH"])
 MODELS  = Path(os.environ["COMFYUI_MODEL_PATH"])
@@ -23,6 +24,12 @@ def _env_flag(name: str, default: bool = False) -> bool:
     
 DOWNLOAD_MODELS = _env_flag("DOWNLOAD_MODELS", default=False)
 
+def install_package(package):
+    try:
+        subprocess.check_call([sys.executable, "-m", "pip", "install", package])
+    except Exception as e:
+        print(f"⚠️ PIP package install error: {e}")
+    
 def run(cmd, cwd=None, check=True):
     print(f"→ {' '.join(cmd)}")
     return subprocess.run(cmd, cwd=cwd, check=check)
@@ -92,6 +99,7 @@ def bg_install_impact():
         threading.Thread(target=_run, args=(ipy,), daemon=True).start()
 
 def main():
+    install_package('hf-transfer')
     workspace.mkdir(parents=True, exist_ok=True)
 
     # 1) Clone core ComfyUI
