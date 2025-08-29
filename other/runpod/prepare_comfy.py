@@ -35,7 +35,7 @@ def install_missing_from_env(var: str = "MISSING_PACKAGES"):
         try:
             subprocess.check_call([
                 sys.executable, "-m", "pip", "install",
-                "--no-deps", "--no-input", "-q", pkg
+                "--no-cache-dir", "--no-input", "-q", pkg
             ])
             print(f"✓ installed: {pkg}")
         except subprocess.CalledProcessError as e:
@@ -110,7 +110,7 @@ def bg_install_impact():
 
     # Run both in their own tiny threads so they can overlap
     for ipy in targets:
-        threading.Thread(target=_run, args=(ipy,), daemon=True).start()
+        _run(ipy)
 
 def main():
     install_missing_from_env()
@@ -134,7 +134,9 @@ def main():
     clone("https://github.com/rgthree/rgthree-comfy.git", rgthree_comfy)
 
     # 5) NOW start the background installers (your desired ordering)
-    threading.Thread(target=bg_install_impact, daemon=True).start() 
+    threading.Thread(target=bg_install_impact)
+    threading.start()
+    threading.join()
 
     # 6) Clone the rest (no duplicates)
     for repo, name in [
@@ -195,7 +197,7 @@ def main():
                             repo_id=repo_id,
                             filename=file_in_repo,
                             token=os.environ.get("HF_READ_TOKEN"),
-                            local_dir=str(stage_dir),
+                            local_dir=str(stage_dir / f"{idx:05d}")
                         )
 
                         src = Path(downloaded_path)
