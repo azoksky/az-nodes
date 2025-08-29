@@ -134,9 +134,8 @@ def main():
     clone("https://github.com/rgthree/rgthree-comfy.git", rgthree_comfy)
 
     # 5) NOW start the background installers (your desired ordering)
-    threading.Thread(target=bg_install_impact)
+    t = threading.Thread(target=bg_install_impact, daemon=False)
     threading.start()
-    threading.join()
 
     # 6) Clone the rest (no duplicates)
     for repo, name in [
