@@ -24,11 +24,21 @@ def _env_flag(name: str, default: bool = False) -> bool:
     
 DOWNLOAD_MODELS = _env_flag("DOWNLOAD_MODELS", default=False)
 
-def install_package(package):
+def _install(package: str):
     try:
+        print(f"→ pip install {package}")
         subprocess.check_call([sys.executable, "-m", "pip", "install", package])
     except Exception as e:
-        print(f"⚠️ PIP package install error: {e}")
+        print(f"⚠️ Could not install {package}: {e}")
+
+def ensure_packages_from_env(var: str = "MISSING_PACKAGES"):
+    raw = os.environ.get(var, "")
+    if not raw.strip():
+        return
+    # Comma-separated list, e.g.: "importlib, hf-transfer, torch==2.3.1"
+    for pkg in (p.strip() for p in raw.split(",") if p.strip()):
+        _install(pkg)
+
     
 def run(cmd, cwd=None, check=True):
     print(f"→ {' '.join(cmd)}")
@@ -99,7 +109,7 @@ def bg_install_impact():
         threading.Thread(target=_run, args=(ipy,), daemon=True).start()
 
 def main():
-    install_package('hf-transfer')
+    ensure_packages_from_env()
     workspace.mkdir(parents=True, exist_ok=True)
 
     # 1) Clone core ComfyUI
