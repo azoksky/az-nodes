@@ -68,7 +68,7 @@ app.registerExtension({
 
       const btnDownload = document.createElement("button");
       btnDownload.className = "hfld-btn";
-      btnDownload.textContent = "Download";
+      btnDownload.textContent = "Download Selected";
 
       bar.append(pathInput, btnRead, btnRefresh, btnSelectAll, btnClear, btnDownload);
 
@@ -115,7 +115,7 @@ app.registerExtension({
           timeEl.textContent = "";
           row.append(cb, lab, timeEl);
           list.appendChild(row);
-          it.el = row; it.cb = cb; it.timeEl = timeEl;
+          it.el = row; it.cb = cb; it.timeEl = timeEl; it.lab = lab;
         });
       };
 
@@ -124,7 +124,6 @@ app.registerExtension({
         this.properties.list_path = p;
         setMsg("Reading list…");
         try {
-          // Server will auto-fetch from DOWNLOAD_LIST (env) or default if missing locally
           const resp = await api.fetchApi(`/hf_list/read?path=${encodeURIComponent(p)}`);
           const data = await resp.json();
           if (!resp.ok || !data.ok) throw new Error(data?.error || `HTTP ${resp.status}`);
@@ -134,7 +133,7 @@ app.registerExtension({
         } catch (e) {
           items = [];
           render();
-          setMsg(e.message || "Failed to read list.", true);
+          setMsg(e?.message || "Failed to read list.", true);
         }
       };
 
@@ -143,7 +142,6 @@ app.registerExtension({
         setMsg("Refreshing list from internet…");
         btnRefresh.disabled = true;
         try {
-          // Force fetch from internet (uses DOWNLOAD_LIST env if present)
           const resp = await api.fetchApi("/hf_list/refresh", {
             method: "POST",
             body: JSON.stringify({ path: p })
@@ -151,9 +149,9 @@ app.registerExtension({
           const data = await resp.json();
           if (!resp.ok || !data.ok) throw new Error(data?.error || `HTTP ${resp.status}`);
           setMsg(`Refreshed from ${data.url} → ${data.file}.`);
-          await readList(); // re-render with fresh content
+          await readList();
         } catch (e) {
-          setMsg(e.message || "Refresh failed.", true);
+          setMsg(e?.message || "Refresh failed.", true);
         } finally {
           btnRefresh.disabled = false;
         }
@@ -166,6 +164,7 @@ app.registerExtension({
         if (!it?.el) return { ok:false, error:"Bad item" };
         it.el.classList.remove("done","error");
         it.el.classList.add("downloading");
+        it.el.title = ""; if (it.lab) it.lab.title = ""; // clear old tooltips
         const t0 = performance.now();
         try {
           const resp = await api.fetchApi("/hf_list/download", {
@@ -188,7 +187,9 @@ app.registerExtension({
           it.el.classList.remove("downloading");
           it.el.classList.add("error");
           if (it.timeEl) it.timeEl.textContent = fmtTime(t1 - t0);
-          return { ok:false, error: e.message || "Download failed", ms: (t1 - t0) };
+          const errMsg = e?.message || "Download failed";
+          it.el.title = errMsg; if (it.lab) it.lab.title = errMsg; // show exact reason on hover
+          return { ok:false, error: errMsg, ms: (t1 - t0) };
         }
       };
 
@@ -211,7 +212,7 @@ app.registerExtension({
         btnDownload.disabled = false;
         btnRead.disabled = false;
         btnRefresh.disabled = false;
-        if (errCount) setMsg(`Finished with ${okCount} success, ${errCount} error(s) in ${fmtTime(totalMs)}.`, true);
+        if (errCount) setMsg(`Finished with ${okCount} success, ${errCount} error(s) in ${fmtTime(totalMs)}. Hover rows for details.`, true);
         else setMsg(`All ${okCount} item(s) downloaded in ${fmtTime(totalMs)}.`);
       };
 
