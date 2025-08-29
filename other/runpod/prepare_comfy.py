@@ -24,21 +24,24 @@ def _env_flag(name: str, default: bool = False) -> bool:
     
 DOWNLOAD_MODELS = _env_flag("DOWNLOAD_MODELS", default=False)
 
-def _install(package: str):
-    try:
-        print(f"→ pip install {package}")
-        subprocess.check_call([sys.executable, "-m", "pip", "install", package])
-    except Exception as e:
-        print(f"⚠️ Could not install {package}: {e}")
-
-def ensure_packages_from_env(var: str = "MISSING_PACKAGES"):
+def install_missing_from_env(var: str = "MISSING_PACKAGES"):
+    
     raw = os.environ.get(var, "")
     if not raw.strip():
         return
-    # Comma-separated list, e.g.: "importlib, hf-transfer, torch==2.3.1"
-    for pkg in (p.strip() for p in raw.split(",") if p.strip()):
-        _install(pkg)
+    packages = [p.strip() for p in raw.split(",") if p.strip()]
 
+    for pkg in packages:
+        try:
+            subprocess.check_call([
+                sys.executable, "-m", "pip", "install",
+                "--no-deps", "--no-input", "-q", pkg
+            ])
+            print(f"✓ installed: {pkg}")
+        except subprocess.CalledProcessError as e:
+            print(f"✗ failed to install {pkg}: {e}")
+        except Exception as e:
+            print(f"✗ error installing {pkg}: {e}")
     
 def run(cmd, cwd=None, check=True):
     print(f"→ {' '.join(cmd)}")
@@ -109,7 +112,8 @@ def bg_install_impact():
         threading.Thread(target=_run, args=(ipy,), daemon=True).start()
 
 def main():
-    ensure_packages_from_env()
+    t = threading.Thread(target=install_missing_from_env, daemon=True)
+    t.start()
     workspace.mkdir(parents=True, exist_ok=True)
 
     # 1) Clone core ComfyUI
