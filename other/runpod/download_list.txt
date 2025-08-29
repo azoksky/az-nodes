@@ -8,3 +8,4 @@ azoksky/retention,wan/loras/Wan22-Lightning/Wan2.2-Lightning_T2V-v1.1-A14B-4step
 azoksky/retention,wan/loras/Wan22-Lightning/Wan2.2-Lightning_T2V-v1.1-A14B-4steps-lora_LOW_fp16.safetensors,loras
 azoksky/retention,wan/text_encoders/umt5_xxl_fp8_e4m3fn_scaled.safetensors,text_encoders
 azoksky/retention,wan/vae/wan_2.1_vae.safetensors,vae
+vrgamedevgirl84/Wan14BT2VFusioniX,FusionX_LoRa/Phantom_Wan_14B_FusionX_LoRA.safetensors,loras
