@@ -96,7 +96,8 @@ def bg_install_impact():
         if ipy.is_file():
             try:
                 print(f"↗ background install: {ipy}")
-                proc = subprocess.Popen(["python", "-B", str(ipy)], cwd=ipy.parent)
+                proc = subprocess.Popen([sys.executable, "-B", str(ipy)], cwd=ipy.parent)
+                # proc = subprocess.Popen(["python", "-B", str(ipy)], cwd=ipy.parent)
                 proc.wait()
                 if proc.returncode == 0:
                     print(f"✓ installer finished: {ipy}")
@@ -112,8 +113,7 @@ def bg_install_impact():
         threading.Thread(target=_run, args=(ipy,), daemon=True).start()
 
 def main():
-    t = threading.Thread(target=install_missing_from_env, daemon=True)
-    t.start()
+    install_missing_from_env()
     workspace.mkdir(parents=True, exist_ok=True)
 
     # 1) Clone core ComfyUI
@@ -134,7 +134,9 @@ def main():
     clone("https://github.com/rgthree/rgthree-comfy.git", rgthree_comfy)
 
     # 5) NOW start the background installers (your desired ordering)
-    threading.Thread(target=bg_install_impact, daemon=True).start()
+    t = threading.Thread(target=install_missing_from_env)
+    t.start()
+    t.join() 
 
     # 6) Clone the rest (no duplicates)
     for repo, name in [
