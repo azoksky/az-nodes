@@ -217,8 +217,7 @@ def main():
                 shutil.rmtree(stage_dir, ignore_errors=True)
                 print(f"🧹 Cleaned up staging folder: {stage_dir}")
     # ---- END FIXED BLOCK ----
-    t.join()
-            
+    t.join()       
     print("🚀 SUCCESSFUL.. NOW RUN COMFY")
 
 if __name__ == "__main__":
