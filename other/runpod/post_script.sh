@@ -2,36 +2,29 @@
 set -Eeuo pipefail
 
 ensure_full_env_for_ssh() {
-  if [ ! -w /etc ]; then
-    return 0
-  fi
+  [ -w /etc ] || return 0
 
   local env_file="/etc/rp_environment"
-  if [ ! -s "$env_file" ]; then
-    local tmp_file
-    tmp_file="$(mktemp "${env_file}.XXXXXX")"
+  local tmp; tmp="$(mktemp "${env_file}.XXXXXX")"
 
-    if [ -r /proc/1/environ ]; then
-      tr '\0' '\n' < /proc/1/environ | awk '{
-        name=$0; sub(/=.*/, "", name);
-        val=$0; sub(/^[^=]*=/, "", val);
-        gsub(/\\/, "\\\\", val); gsub(/"/, "\\\"", val);
-        printf("if [ -z \"${%s+x}\" ]; then export %s=\"%s\"; fi\n", name, name, val)
-      }' > "$tmp_file"
-    else
-      env | awk '{
-        name=$0; sub(/=.*/, "", name);
-        val=$0; sub(/^[^=]*=/, "", val);
-        gsub(/\\/, "\\\\", val); gsub(/"/, "\\\"", val);
-        printf("if [ -z \"${%s+x}\" ]; then export %s=\"%s\"; fi\n", name, name, val)
-      }' > "$tmp_file"
-    fi
+  local src="/proc/1/environ"
+  [ -r "$src" ] || src="/proc/self/environ"
 
-    awk '!seen[$0]++' "$tmp_file" > "${tmp_file}.dedup"
-    mv -f "${tmp_file}.dedup" "$env_file"
-    rm -f "$tmp_file" || true
+  tr '\0' '\n' < "$src" | awk '{
+    name=$0; sub(/=.*/, "", name);
+    val=$0; sub(/^[^=]*=/, "", val);
+    gsub(/\\/, "\\\\", val); gsub(/"/, "\\\"", val);
+    printf("if [ -z \"${%s+x}\" ]; then export %s=\"%s\"; fi\n", name, name, val)
+  }' > "$tmp"
+
+  awk '!seen[$0]++' "$tmp" > "${tmp}.dedup"
+  if ! cmp -s "${tmp}.dedup" "$env_file"; then
+    mv -f "${tmp}.dedup" "$env_file"
     chmod 600 "$env_file"
+  else
+    rm -f "${tmp}.dedup"
   fi
+  rm -f "$tmp" || true
 
   for f in ~/.bashrc ~/.bash_profile ~/.profile; do
     [ -f "$f" ] || touch "$f"
@@ -43,6 +36,7 @@ ensure_full_env_for_ssh() {
     chmod 0644 /etc/profile.d/10-container-env.sh
   fi
 }
+
 
 COMFYUI_PATH="${COMFYUI_PATH:-/workspace/ComfyUI}"
 WORKSPACE="$(dirname "$COMFYUI_PATH")"
