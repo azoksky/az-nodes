@@ -4,18 +4,19 @@
 """
 prepare_comfy.py
 ----------------
-Deployment-ready script to prepare ComfyUI environment.
+Production-ready script to prepare ComfyUI environment.
 
-What it does:
+Features:
 1. Installs missing Python packages if specified in env.
 2. Clones ComfyUI core repo (if missing).
-3. Downloads `custom_node_list.txt` from GitHub (URL configurable via env).
-   - For each repo in the list:
-       - Clone into custom_nodes/
-       - If an install.py exists, execute it in a background thread.
-4. Applies default settings/configs (runs in its own thread).
-5. Optionally downloads models (if DOWNLOAD_MODELS=1).
-6. Waits for all threads before exiting.
+3. Downloads node list from CUSTOM_NODE_URL_LIST.
+   - For each repo: clone into custom_nodes/
+   - If install.py exists, run in background thread.
+4. Downloads settings list from SETTINGS_URL_LIST.
+   - Each line: url,relative/path/in/comfyui
+   - Downloads file into COMFY dir (with validation).
+5. Optionally downloads models if DOWNLOAD_MODELS=1.
+6. Waits for all background threads before exit.
 """
 
 import os
@@ -23,7 +24,7 @@ import sys
 import subprocess
 import threading
 from pathlib import Path
-from typing import List, Tuple
+from typing import List
 import shutil
 import urllib.request
 from huggingface_hub import hf_hub_download
@@ -36,7 +37,7 @@ def _req_env(name: str) -> Path:
     val = os.getenv(name)
     if not val:
         raise RuntimeError(f"Missing required environment variable: {name}")
-    return Path(val)
+    return Path(val).expanduser().resolve()   # ensure absolute path
 
 def _env_flag(name: str, default: bool = False) -> bool:
     val = os.getenv(name)
@@ -109,8 +110,13 @@ def run_installer(ipy: Path) -> None:
 def clone(repo: str, dest: Path, threads: list[threading.Thread], attempts: int = 2) -> None:
     """Clone repo, and if install.py exists, run it in background thread."""
     if dest.exists():
-        print(f"✓ already present: {dest}")
-        return
+        if (dest / ".git").exists():
+            print(f"✓ already present: {dest}")
+            return
+        else:
+            print(f"⚠ {dest} exists but is not a valid git repo. Removing...")
+            shutil.rmtree(dest, ignore_errors=True)
+
     dest.parent.mkdir(parents=True, exist_ok=True)
 
     for i in range(1, attempts + 1):
@@ -142,10 +148,13 @@ def fetch_node_list() -> list[str]:
         with urllib.request.urlopen(req, timeout=30) as r:
             content = r.read().decode("utf-8")
         lines = [line.strip() for line in content.splitlines() if line.strip() and not line.strip().startswith("#")]
-        print(f"✓ fetched {len(lines)} repos from {CUSTOM_NODE_URL_LIST}")
+        if not lines:
+            print(f"⚠ Node list from {CUSTOM_NODE_URL_LIST} is empty, skipping custom nodes.")
+        else:
+            print(f"✓ fetched {len(lines)} repos from {CUSTOM_NODE_URL_LIST}")
         return lines
     except Exception as e:
-        print(f"⚠ Failed to fetch node list: {e}")
+        print(f"⚠ Failed to fetch node list from {CUSTOM_NODE_URL_LIST}: {e}")
         return []
 
 # ---------------------------
@@ -155,15 +164,18 @@ def fetch_node_list() -> list[str]:
 def apply_settings() -> None:
     """Fetch and apply settings/config files defined in SETTINGS_URL_LIST."""
     try:
-        # Download the settings list file
         req = urllib.request.Request(SETTINGS_URL_LIST, headers={"User-Agent": "curl/8"})
         with urllib.request.urlopen(req, timeout=30) as r:
             content = r.read().decode("utf-8")
 
         lines = [line.strip() for line in content.splitlines() if line.strip() and not line.strip().startswith("#")]
-        print(f"✓ fetched {len(lines)} settings entries from {SETTINGS_URL_LIST}")
+        if not lines:
+            print(f"⚠ Settings list from {SETTINGS_URL_LIST} is empty, skipping settings.")
+            return
+        else:
+            print(f"✓ fetched {len(lines)} settings entries from {SETTINGS_URL_LIST}")
     except Exception as e:
-        print(f"⚠ Failed to fetch settings list: {e}")
+        print(f"⚠ Failed to fetch settings list from {SETTINGS_URL_LIST}: {e}")
         return
 
     all_ok = True
@@ -175,7 +187,14 @@ def apply_settings() -> None:
                 continue
 
             url, rel_path = parts
-            dest = COMFY / rel_path
+            dest = (COMFY / rel_path).resolve()
+
+            # Security check: must stay inside COMFY
+            if not str(dest).startswith(str(COMFY.resolve())):
+                print(f"✗ Invalid path outside COMFY detected, skipping: {dest}")
+                all_ok = False
+                continue
+
             dest.parent.mkdir(parents=True, exist_ok=True)
             tmp = dest.with_suffix(dest.suffix + ".part")
 
@@ -230,6 +249,10 @@ def download_models_if_enabled() -> None:
         with file_list_path.open("r", encoding="utf-8") as f:
             lines = [line.strip() for line in f if line.strip() and not line.startswith("#")]
 
+        if not lines:
+            print(f"⚠ Model list from {MODELS_URL_LIST} is empty, skipping model downloads.")
+            return
+
         total = len(lines)
         print(f"Found {total} files to download.")
 
@@ -238,6 +261,11 @@ def download_models_if_enabled() -> None:
                 repo_id, file_in_repo, local_subdir = [x.strip() for x in line.split(",", 2)]
                 target_dir = MODELS / local_subdir.strip("/\\")
                 target_dir.mkdir(parents=True, exist_ok=True)
+
+                dst = target_dir / Path(file_in_repo).name
+                if dst.exists():
+                    print(f"⏩ skipping already present: {dst}")
+                    continue
 
                 print(f"[{idx}/{total}] {file_in_repo} ← {repo_id}")
                 downloaded_path = hf_hub_download(
@@ -248,8 +276,8 @@ def download_models_if_enabled() -> None:
                 )
 
                 src = Path(downloaded_path)
-                shutil.move(str(src), str(target_dir / src.name))
-                print(f"✓ Finished: {target_dir / src.name}")
+                shutil.move(str(src), str(dst))
+                print(f"✓ Finished: {dst}")
             except Exception as e:
                 print(f"⚠ Error on line {idx}: {line} → {e}")
     except Exception as e:
