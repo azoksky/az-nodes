@@ -123,7 +123,6 @@ def clone(repo: str, dest: Path, threads: list[threading.Thread], name: str | No
         try:
             run(["git", "clone", "--depth=1", "--single-branch", "--no-tags", repo, str(dest)])
             print(f"✓ cloned: {repo} → {dest}")
-
             ipy = dest / "install.py"
             if ipy.is_file():
                 if name and "impact" in name.lower():  # case-insensitive check
@@ -131,8 +130,8 @@ def clone(repo: str, dest: Path, threads: list[threading.Thread], name: str | No
                     t.start()
                     threads.append(t)
                     print(f"↗ installer scheduled for impact node: {name}")
-                else:
-                    print(f"⏩ skipping installer for non-impact node: {name or dest.name}")
+            else:
+               print(f"⏩ no installer triggered for {name}")
 
             return
         except subprocess.CalledProcessError as e:
