@@ -58,6 +58,7 @@ CUSTOM_NODE_URL_LIST = os.environ.get("CUSTOM_NODE_URL_LIST", CUSTOM_NODE_URL_LI
 MODELS_URL_LIST_DEFAULT = "https://raw.githubusercontent.com/azoksky/az-nodes/refs/heads/main/other/runpod/download_list.txt"
 MODELS_URL_LIST = (os.environ.get("MODELS_URL_LIST") or "").strip() or MODELS_URL_LIST_DEFAULT
 
+# Settings download list URL
 SETTINGS_URL_LIST_DEFAULT = "https://raw.githubusercontent.com/azoksky/az-nodes/refs/heads/main/other/runpod/settings_list.txt"
 SETTINGS_URL_LIST = (os.environ.get("SETTINGS_URL_LIST") or "").strip() or SETTINGS_URL_LIST_DEFAULT
 
@@ -152,34 +153,54 @@ def fetch_node_list() -> list[str]:
 # ---------------------------
 
 def apply_settings() -> None:
-    downloads: List[Tuple[str, Path]] = [
-        (
-            "https://raw.githubusercontent.com/azoksky/az-nodes/refs/heads/main/other/runpod/comfy.settings.json",
-            USER / "comfy.settings.json",
-        ),
-        (
-            "https://raw.githubusercontent.com/azoksky/az-nodes/refs/heads/main/other/runpod/rgthree_config.json",
-            CUSTOM / "rgthree-comfy" / "rgthree_config.json",
-        ),
-    ]
+    """Fetch and apply settings/config files defined in SETTINGS_URL_LIST."""
+    try:
+        # Download the settings list file
+        req = urllib.request.Request(SETTINGS_URL_LIST, headers={"User-Agent": "curl/8"})
+        with urllib.request.urlopen(req, timeout=30) as r:
+            content = r.read().decode("utf-8")
 
-    def _fetch(url: str, dest: Path, attempts: int = 3, timeout: int = 30) -> bool:
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        tmp = dest.with_suffix(dest.suffix + ".part")
-        for i in range(1, attempts + 1):
-            try:
-                req = urllib.request.Request(url, headers={"User-Agent": "curl/8"})
-                with urllib.request.urlopen(req, timeout=timeout) as r, open(tmp, "wb") as f:
-                    shutil.copyfileobj(r, f)
-                tmp.replace(dest)
-                print(f"✓ downloaded: {dest}  ← {url}")
-                return True
-            except Exception as e:
-                print(f"⚠ attempt {i}/{attempts} failed for {url}: {e}")
-                tmp.unlink(missing_ok=True)
-        return False
+        lines = [line.strip() for line in content.splitlines() if line.strip() and not line.strip().startswith("#")]
+        print(f"✓ fetched {len(lines)} settings entries from {SETTINGS_URL_LIST}")
+    except Exception as e:
+        print(f"⚠ Failed to fetch settings list: {e}")
+        return
 
-    all_ok = all(_fetch(url, dest) for url, dest in downloads)
+    all_ok = True
+    for idx, line in enumerate(lines, 1):
+        try:
+            parts = [x.strip() for x in line.split(",", 1)]
+            if len(parts) != 2:
+                print(f"⚠ Skipping malformed line {idx}: {line}")
+                continue
+
+            url, rel_path = parts
+            dest = COMFY / rel_path
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            tmp = dest.with_suffix(dest.suffix + ".part")
+
+            success = False
+            for attempt in range(1, 4):  # up to 3 retries
+                try:
+                    req = urllib.request.Request(url, headers={"User-Agent": "curl/8"})
+                    with urllib.request.urlopen(req, timeout=30) as r, open(tmp, "wb") as f:
+                        shutil.copyfileobj(r, f)
+                    tmp.replace(dest)  # atomic rename
+                    print(f"✓ downloaded: {dest} ← {url}")
+                    success = True
+                    break
+                except Exception as e:
+                    print(f"⚠ attempt {attempt}/3 failed for {url}: {e}")
+                    tmp.unlink(missing_ok=True)
+
+            if not success:
+                print(f"✗ giving up on {url}")
+                all_ok = False
+
+        except Exception as e:
+            print(f"⚠ Error processing line {idx}: {line} → {e}")
+            all_ok = False
+
     if all_ok:
         print("✓ Successfully applied all settings.")
     else:
