@@ -7,15 +7,15 @@ prepare_comfy.py
 Production-ready script to prepare ComfyUI environment.
 
 Features:
-1. Installs missing Python packages if specified in env.
+1. Installs missing Python packages in background thread.
 2. Clones ComfyUI core repo (if missing).
 3. Downloads node list from CUSTOM_NODE_URL_LIST.
    - For each repo: clone into custom_nodes/
-   - If install.py exists, run in background thread.
+   - If install.py exists, run in background thread only if flag is set.
 4. Downloads settings list from SETTINGS_URL_LIST.
    - Each line: url,relative/path/in/comfyui
    - Downloads file into COMFY dir (with validation).
-5. Optionally downloads models if DOWNLOAD_MODELS=1.
+5. Downloads models in background thread if DOWNLOAD_MODELS=1.
 6. Waits for all background threads before exit.
 """
 
@@ -51,19 +51,30 @@ workspace = COMFY.parent
 CUSTOM  = COMFY / "custom_nodes"
 USER    = COMFY / "user" / "default"
 
-# Node list URL (override via env)
+# URLs (overridable via env)
 CUSTOM_NODE_URL_LIST_DEFAULT = "https://raw.githubusercontent.com/azoksky/az-nodes/refs/heads/main/other/runpod/custom_node_list.txt"
 CUSTOM_NODE_URL_LIST = os.environ.get("CUSTOM_NODE_URL_LIST", CUSTOM_NODE_URL_LIST_DEFAULT).strip()
 
-# Model download list URL
 MODELS_URL_LIST_DEFAULT = "https://raw.githubusercontent.com/azoksky/az-nodes/refs/heads/main/other/runpod/download_list.txt"
 MODELS_URL_LIST = (os.environ.get("MODELS_URL_LIST") or "").strip() or MODELS_URL_LIST_DEFAULT
 
-# Settings download list URL
 SETTINGS_URL_LIST_DEFAULT = "https://raw.githubusercontent.com/azoksky/az-nodes/refs/heads/main/other/runpod/settings_list.txt"
 SETTINGS_URL_LIST = (os.environ.get("SETTINGS_URL_LIST") or "").strip() or SETTINGS_URL_LIST_DEFAULT
 
 DOWNLOAD_MODELS = _env_flag("DOWNLOAD_MODELS", default=False)
+
+# ----------------------------
+# Thread concurrency limit
+# ----------------------------
+MAX_CONCURRENT = 4
+sem = threading.Semaphore(MAX_CONCURRENT)
+
+def threaded(fn):
+    """Decorator to enforce concurrency limit in threads."""
+    def wrapper(*args, **kwargs):
+        with sem:
+            return fn(*args, **kwargs)
+    return wrapper
 
 # ----------
 # Utilities
@@ -74,10 +85,12 @@ def run(cmd: List[str], cwd: Path | None = None, check: bool = True) -> subproce
     print(f"→ {pretty}")
     return subprocess.run(cmd, cwd=str(cwd) if cwd else None, check=check)
 
+@threaded
 def install_missing_from_env(var: str = "MISSING_PACKAGES") -> None:
     """Install packages from env var: MISSING_PACKAGES=pack1,pack2,..."""
     raw = os.environ.get(var, "")
     if not raw.strip():
+        print("⏩ no missing packages specified")
         return
     for pkg in [p.strip() for p in raw.split(",") if p.strip()]:
         try:
@@ -86,10 +99,15 @@ def install_missing_from_env(var: str = "MISSING_PACKAGES") -> None:
         except Exception as e:
             print(f"✗ error installing {pkg}: {e}")
 
+def parse_bool(val: str) -> bool:
+    """Parse string to bool (yes/true/1)."""
+    return str(val).strip().lower() in ("1", "true", "yes")
+
 # ---------------------------
 # Installer runner
 # ---------------------------
 
+@threaded
 def run_installer(ipy: Path) -> None:
     """Run install.py in its directory (blocking)."""
     try:
@@ -107,8 +125,8 @@ def run_installer(ipy: Path) -> None:
 # Clone with install support
 # ---------------------------
 
-def clone(repo: str, dest: Path, threads: list[threading.Thread], name: str | None = None, attempts: int = 2) -> None:
-    """Clone repo, and if install.py exists, run only for impact-related repos."""
+def clone(repo: str, dest: Path, threads: list[threading.Thread], name: str | None = None, run_install: bool = False, attempts: int = 2) -> None:
+    """Clone repo, and if install.py exists, run in background thread depending on run_install flag."""
     if dest.exists():
         if (dest / ".git").exists():
             print(f"✓ already present: {dest}")
@@ -123,15 +141,18 @@ def clone(repo: str, dest: Path, threads: list[threading.Thread], name: str | No
         try:
             run(["git", "clone", "--depth=1", "--single-branch", "--no-tags", repo, str(dest)])
             print(f"✓ cloned: {repo} → {dest}")
+
             ipy = dest / "install.py"
             if ipy.is_file():
-                if name and "impact" in name.lower():  # case-insensitive check
+                if run_install:
                     t = threading.Thread(target=run_installer, args=(ipy,), daemon=False)
                     t.start()
                     threads.append(t)
-                    print(f"↗ installer scheduled for impact node: {name}")
+                    print(f"↗ installer scheduled for node: {name or dest.name}")
+                else:
+                    print(f"⏩ skipping installer for node: {name or dest.name}")
             else:
-               print(f"⏩ no installer triggered for {name}")
+                print(f"⏩ no install.py found for {name or dest.name}")
 
             return
         except subprocess.CalledProcessError as e:
@@ -139,13 +160,12 @@ def clone(repo: str, dest: Path, threads: list[threading.Thread], name: str | No
             if i == attempts:
                 raise
 
-
 # ---------------------------
 # Fetch node list
 # ---------------------------
 
-def fetch_node_list() -> list[str]:
-    """Download the custom_node_list.txt and return repos."""
+def fetch_node_list() -> list[tuple[str, bool]]:
+    """Download the custom_node_list.txt and return list of (repo, run_install)."""
     try:
         req = urllib.request.Request(CUSTOM_NODE_URL_LIST, headers={"User-Agent": "curl/8"})
         with urllib.request.urlopen(req, timeout=30) as r:
@@ -153,9 +173,16 @@ def fetch_node_list() -> list[str]:
         lines = [line.strip() for line in content.splitlines() if line.strip() and not line.strip().startswith("#")]
         if not lines:
             print(f"⚠ Node list from {CUSTOM_NODE_URL_LIST} is empty, skipping custom nodes.")
-        else:
-            print(f"✓ fetched {len(lines)} repos from {CUSTOM_NODE_URL_LIST}")
-        return lines
+            return []
+        print(f"✓ fetched {len(lines)} entries from {CUSTOM_NODE_URL_LIST}")
+
+        repos: list[tuple[str, bool]] = []
+        for idx, line in enumerate(lines, 1):
+            parts = [x.strip() for x in line.split(",", 1)]
+            repo = parts[0]
+            run_install = parse_bool(parts[1]) if len(parts) == 2 else False
+            repos.append((repo, run_install))
+        return repos
     except Exception as e:
         print(f"⚠ Failed to fetch node list from {CUSTOM_NODE_URL_LIST}: {e}")
         return []
@@ -164,6 +191,7 @@ def fetch_node_list() -> list[str]:
 # Settings/config fetch
 # ---------------------------
 
+@threaded
 def apply_settings() -> None:
     """Fetch and apply settings/config files defined in SETTINGS_URL_LIST."""
     try:
@@ -175,13 +203,11 @@ def apply_settings() -> None:
         if not lines:
             print(f"⚠ Settings list from {SETTINGS_URL_LIST} is empty, skipping settings.")
             return
-        else:
-            print(f"✓ fetched {len(lines)} settings entries from {SETTINGS_URL_LIST}")
+        print(f"✓ fetched {len(lines)} settings entries from {SETTINGS_URL_LIST}")
     except Exception as e:
         print(f"⚠ Failed to fetch settings list from {SETTINGS_URL_LIST}: {e}")
         return
 
-    all_ok = True
     for idx, line in enumerate(lines, 1):
         try:
             parts = [x.strip() for x in line.split(",", 1)]
@@ -192,22 +218,20 @@ def apply_settings() -> None:
             url, rel_path = parts
             dest = (COMFY / rel_path).resolve()
 
-            # Security check: must stay inside COMFY
             if not str(dest).startswith(str(COMFY.resolve())):
                 print(f"✗ Invalid path outside COMFY detected, skipping: {dest}")
-                all_ok = False
                 continue
 
             dest.parent.mkdir(parents=True, exist_ok=True)
             tmp = dest.with_suffix(dest.suffix + ".part")
 
             success = False
-            for attempt in range(1, 4):  # up to 3 retries
+            for attempt in range(1, 4):  # retries
                 try:
                     req = urllib.request.Request(url, headers={"User-Agent": "curl/8"})
                     with urllib.request.urlopen(req, timeout=30) as r, open(tmp, "wb") as f:
                         shutil.copyfileobj(r, f)
-                    tmp.replace(dest)  # atomic rename
+                    tmp.replace(dest)
                     print(f"✓ downloaded: {dest} ← {url}")
                     success = True
                     break
@@ -217,24 +241,18 @@ def apply_settings() -> None:
 
             if not success:
                 print(f"✗ giving up on {url}")
-                all_ok = False
 
         except Exception as e:
             print(f"⚠ Error processing line {idx}: {line} → {e}")
-            all_ok = False
-    if all_ok:
-        print("✓ Successfully applied all settings.")
-    else:
-        print("⚠ Some settings failed to download (continuing).")
-    print("🚀 SUCCESSFUL.. NOW RUN COMFY--------------------------------------------------------------")  
-
 
 # ---------------------------
 # Model downloads
 # ---------------------------
 
+@threaded
 def download_models_if_enabled() -> None:
     if not DOWNLOAD_MODELS:
+        print("⏩ model downloads disabled by flag")
         return
     try:
         file_list_path = workspace / "download_list.txt"
@@ -245,7 +263,6 @@ def download_models_if_enabled() -> None:
             shutil.copyfileobj(r, f)
         tmp.replace(file_list_path)
         print(f"✓ downloaded: {file_list_path}  ← {MODELS_URL_LIST}")
-        print("Downloading models now.....")
 
         stage_dir = workspace / "_hfstage"
         stage_dir.mkdir(parents=True, exist_ok=True)
@@ -258,7 +275,7 @@ def download_models_if_enabled() -> None:
             return
 
         total = len(lines)
-        print(f"Found {total} files to download.")
+        print(f"Found {total} models to download.")
 
         for idx, line in enumerate(lines, 1):
             try:
@@ -271,17 +288,16 @@ def download_models_if_enabled() -> None:
                     print(f"⏩ skipping already present: {dst}")
                     continue
 
-                print(f"[{idx}/{total}] {file_in_repo} ← {repo_id}")
+                print(f"[{idx}/{total}] START downloading {file_in_repo} from {repo_id}")
                 downloaded_path = hf_hub_download(
                     repo_id=repo_id,
                     filename=file_in_repo,
                     token=os.environ.get("HF_READ_TOKEN"),
                     local_dir=str(stage_dir / f"{idx:05d}")
                 )
-
                 src = Path(downloaded_path)
                 shutil.move(str(src), str(dst))
-                print(f"✓ Finished: {dst}")
+                print(f"[{idx}/{total}] ✓ Finished: {dst}")
             except Exception as e:
                 print(f"⚠ Error on line {idx}: {line} → {e}")
     except Exception as e:
@@ -294,34 +310,42 @@ def download_models_if_enabled() -> None:
 # ---------------------------
 
 def main() -> None:
-    install_missing_from_env()
     workspace.mkdir(parents=True, exist_ok=True)
     CUSTOM.mkdir(parents=True, exist_ok=True)
 
     threads: list[threading.Thread] = []
 
-    # 1) Clone ComfyUI core
+    # 1) Missing libs
+    t_libs = threading.Thread(target=install_missing_from_env, daemon=False)
+    t_libs.start()
+    threads.append(t_libs)
+
+    # 2) Clone ComfyUI core
     if not COMFY.exists():
         clone("https://github.com/comfyanonymous/ComfyUI.git", COMFY, threads)
 
-    # 2) Fetch & clone nodes
+    # 3) Fetch & clone custom nodes
     repos = fetch_node_list()
-    for repo in repos:
+    for repo, run_install in repos:
         name = repo.rstrip("/").split("/")[-1].replace(".git", "")
         dest = CUSTOM / name
-        clone(repo, dest, threads, name)
+        clone(repo, dest, threads, name, run_install)
 
-    # 3) Apply settings
-    t = threading.Thread(target=apply_settings, daemon=False)
-    t.start()
-    threads.append(t)
+    # 4) Settings
+    t_settings = threading.Thread(target=apply_settings, daemon=False)
+    t_settings.start()
+    threads.append(t_settings)
 
-    # 4) Optional model downloads
-    download_models_if_enabled()
+    # 5) Models
+    t_models = threading.Thread(target=download_models_if_enabled, daemon=False)
+    t_models.start()
+    threads.append(t_models)
 
-    # 5) Wait for all background tasks
+    # 6) Wait
     for t in threads:
         t.join()
-   
+
+    print("🚀 SUCCESSFUL.. NOW RUN COMFY")
+
 if __name__ == "__main__":
     main()
