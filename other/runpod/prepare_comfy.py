@@ -9,8 +9,10 @@ Deployment-ready script to prepare ComfyUI environment.
 What it does:
 1. Installs missing Python packages if specified in env.
 2. Clones ComfyUI core repo (if missing).
-3. Reads `extensions.txt` → clones each extension repo into custom_nodes/.
-   - After cloning, if an install.py is found, it is executed in a background thread.
+3. Downloads `custom_node_list.txt` from GitHub each run.
+   - For each repo in the list:
+       - Clone into custom_nodes/
+       - If an install.py exists, execute it in a background thread.
 4. Applies default settings/configs (runs in its own thread).
 5. Optionally downloads models (if DOWNLOAD_MODELS=1).
 6. Waits for all threads before exiting.
@@ -48,10 +50,11 @@ workspace = COMFY.parent
 CUSTOM  = COMFY / "custom_nodes"
 USER    = COMFY / "user" / "default"
 
+NODE_LIST_URL = "https://raw.githubusercontent.com/azoksky/az-nodes/refs/heads/main/other/runpod/custom_node_list.txt"
+
 LIST_URL_DEFAULT = "https://raw.githubusercontent.com/azoksky/az-nodes/refs/heads/main/other/runpod/download_list.txt"
 LIST_URL_ENV = (os.environ.get("DOWNLOAD_LIST") or "").strip() or LIST_URL_DEFAULT
 
-EXT_FILE = workspace / "extensions.txt"
 DOWNLOAD_MODELS = _env_flag("DOWNLOAD_MODELS", default=False)
 
 # ----------
@@ -120,6 +123,23 @@ def clone(repo: str, dest: Path, threads: list[threading.Thread], attempts: int 
             print(f"⚠ clone attempt {i}/{attempts} failed for {repo}: {e}")
             if i == attempts:
                 raise
+
+# ---------------------------
+# Fetch node list
+# ---------------------------
+
+def fetch_node_list() -> list[str]:
+    """Download the custom_node_list.txt and return repos."""
+    try:
+        req = urllib.request.Request(NODE_LIST_URL, headers={"User-Agent": "curl/8"})
+        with urllib.request.urlopen(req, timeout=30) as r:
+            content = r.read().decode("utf-8")
+        lines = [line.strip() for line in content.splitlines() if line.strip() and not line.strip().startswith("#")]
+        print(f"✓ fetched {len(lines)} repos from {NODE_LIST_URL}")
+        return lines
+    except Exception as e:
+        print(f"⚠ Failed to fetch node list: {e}")
+        return []
 
 # ---------------------------
 # Settings/config fetch
@@ -225,20 +245,14 @@ def main() -> None:
     if not COMFY.exists():
         clone("https://github.com/comfyanonymous/ComfyUI.git", COMFY, threads)
 
-    # 2) Clone from extensions.txt
-    if EXT_FILE.is_file():
-        with EXT_FILE.open("r", encoding="utf-8") as f:
-            for line in f:
-                repo = line.strip()
-                if not repo or repo.startswith("#"):
-                    continue
-                name = repo.rstrip("/").split("/")[-1].replace(".git", "")
-                dest = CUSTOM / name
-                clone(repo, dest, threads)
-    else:
-        print(f"⚠ No extensions.txt found at {EXT_FILE}, skipping extra nodes.")
+    # 2) Fetch & clone nodes
+    repos = fetch_node_list()
+    for repo in repos:
+        name = repo.rstrip("/").split("/")[-1].replace(".git", "")
+        dest = CUSTOM / name
+        clone(repo, dest, threads)
 
-    # 3) Apply settings (after cloning)
+    # 3) Apply settings
     t = threading.Thread(target=apply_settings, daemon=False)
     t.start()
     threads.append(t)
@@ -246,7 +260,7 @@ def main() -> None:
     # 4) Optional model downloads
     download_models_if_enabled()
 
-    # 5) Wait for all background installers/settings
+    # 5) Wait for all background tasks
     for t in threads:
         t.join()
 
