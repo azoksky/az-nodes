@@ -66,7 +66,7 @@ DOWNLOAD_MODELS = _env_flag("DOWNLOAD_MODELS", default=False)
 # ----------------------------
 # Thread concurrency limit
 # ----------------------------
-MAX_CONCURRENT = 4
+MAX_CONCURRENT = 2
 sem = threading.Semaphore(MAX_CONCURRENT)
 
 def threaded(fn):
