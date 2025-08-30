@@ -219,11 +219,12 @@ def apply_settings() -> None:
         except Exception as e:
             print(f"⚠ Error processing line {idx}: {line} → {e}")
             all_ok = False
-
     if all_ok:
         print("✓ Successfully applied all settings.")
     else:
         print("⚠ Some settings failed to download (continuing).")
+    print("🚀 SUCCESSFUL.. NOW RUN COMFY--------------------------------------------------------------")  
+
 
 # ---------------------------
 # Model downloads
@@ -318,8 +319,6 @@ def main() -> None:
     # 5) Wait for all background tasks
     for t in threads:
         t.join()
-
-    print("🚀 SUCCESSFUL.. NOW RUN COMFY")
-
+   
 if __name__ == "__main__":
     main()
