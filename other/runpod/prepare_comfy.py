@@ -310,8 +310,8 @@ def download_models_if_enabled() -> None:
 # ---------------------------
 
 def main() -> None:
-    workspace.mkdir(parents=True, exist_ok=True)
-    CUSTOM.mkdir(parents=True, exist_ok=True)
+    # workspace.mkdir(parents=True, exist_ok=True)
+    # CUSTOM.mkdir(parents=True, exist_ok=True)
 
     threads: list[threading.Thread] = []
 
