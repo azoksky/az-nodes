@@ -127,6 +127,7 @@ def clone(repo: str, dest: Path, threads: list[threading.Thread], attempts: int 
             # Immediately check for install.py
             ipy = dest / "install.py"
             if ipy.is_file():
+                print(f"THERE IS INSTALL.PY in {dest}************************************************************")
                 t = threading.Thread(target=run_installer, args=(ipy,), daemon=False)
                 t.start()
                 threads.append(t)
