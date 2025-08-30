@@ -107,8 +107,8 @@ def run_installer(ipy: Path) -> None:
 # Clone with install support
 # ---------------------------
 
-def clone(repo: str, dest: Path, threads: list[threading.Thread], attempts: int = 2) -> None:
-    """Clone repo, and if install.py exists, run it in background thread."""
+def clone(repo: str, dest: Path, threads: list[threading.Thread], name: str | None = None, attempts: int = 2) -> None:
+    """Clone repo, and if install.py exists, run only for impact-related repos."""
     if dest.exists():
         if (dest / ".git").exists():
             print(f"✓ already present: {dest}")
@@ -124,19 +124,22 @@ def clone(repo: str, dest: Path, threads: list[threading.Thread], attempts: int 
             run(["git", "clone", "--depth=1", "--single-branch", "--no-tags", repo, str(dest)])
             print(f"✓ cloned: {repo} → {dest}")
 
-            # Immediately check for install.py
             ipy = dest / "install.py"
             if ipy.is_file():
-                print(f"THERE IS INSTALL.PY in {dest}************************************************************")
-                t = threading.Thread(target=run_installer, args=(ipy,), daemon=False)
-                t.start()
-                threads.append(t)
+                if name and "impact" in name.lower():  # case-insensitive check
+                    t = threading.Thread(target=run_installer, args=(ipy,), daemon=False)
+                    t.start()
+                    threads.append(t)
+                    print(f"↗ installer scheduled for impact node: {name}")
+                else:
+                    print(f"⏩ skipping installer for non-impact node: {name or dest.name}")
 
             return
         except subprocess.CalledProcessError as e:
             print(f"⚠ clone attempt {i}/{attempts} failed for {repo}: {e}")
             if i == attempts:
                 raise
+
 
 # ---------------------------
 # Fetch node list
@@ -307,7 +310,7 @@ def main() -> None:
     for repo in repos:
         name = repo.rstrip("/").split("/")[-1].replace(".git", "")
         dest = CUSTOM / name
-        clone(repo, dest, threads)
+        clone(repo, dest, threads, name)
 
     # 3) Apply settings
     t = threading.Thread(target=apply_settings, daemon=False)
