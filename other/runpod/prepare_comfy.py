@@ -9,7 +9,7 @@ Deployment-ready script to prepare ComfyUI environment.
 What it does:
 1. Installs missing Python packages if specified in env.
 2. Clones ComfyUI core repo (if missing).
-3. Downloads `custom_node_list.txt` from GitHub each run.
+3. Downloads `custom_node_list.txt` from GitHub (URL configurable via env).
    - For each repo in the list:
        - Clone into custom_nodes/
        - If an install.py exists, execute it in a background thread.
@@ -50,10 +50,16 @@ workspace = COMFY.parent
 CUSTOM  = COMFY / "custom_nodes"
 USER    = COMFY / "user" / "default"
 
-NODE_LIST_URL = "https://raw.githubusercontent.com/azoksky/az-nodes/refs/heads/main/other/runpod/custom_node_list.txt"
+# Node list URL (override via env)
+CUSTOM_NODE_URL_LIST_DEFAULT = "https://raw.githubusercontent.com/azoksky/az-nodes/refs/heads/main/other/runpod/custom_node_list.txt"
+CUSTOM_NODE_URL_LIST = os.environ.get("CUSTOM_NODE_URL_LIST", CUSTOM_NODE_URL_LIST_DEFAULT).strip()
 
-LIST_URL_DEFAULT = "https://raw.githubusercontent.com/azoksky/az-nodes/refs/heads/main/other/runpod/download_list.txt"
-LIST_URL_ENV = (os.environ.get("DOWNLOAD_LIST") or "").strip() or LIST_URL_DEFAULT
+# Model download list URL
+MODELS_URL_LIST_DEFAULT = "https://raw.githubusercontent.com/azoksky/az-nodes/refs/heads/main/other/runpod/download_list.txt"
+MODELS_URL_LIST = (os.environ.get("MODELS_URL_LIST") or "").strip() or MODELS_URL_LIST_DEFAULT
+
+SETTINGS_URL_LIST_DEFAULT = "https://raw.githubusercontent.com/azoksky/az-nodes/refs/heads/main/other/runpod/settings_list.txt"
+SETTINGS_URL_LIST = (os.environ.get("SETTINGS_URL_LIST") or "").strip() or SETTINGS_URL_LIST_DEFAULT
 
 DOWNLOAD_MODELS = _env_flag("DOWNLOAD_MODELS", default=False)
 
@@ -131,11 +137,11 @@ def clone(repo: str, dest: Path, threads: list[threading.Thread], attempts: int 
 def fetch_node_list() -> list[str]:
     """Download the custom_node_list.txt and return repos."""
     try:
-        req = urllib.request.Request(NODE_LIST_URL, headers={"User-Agent": "curl/8"})
+        req = urllib.request.Request(CUSTOM_NODE_URL_LIST, headers={"User-Agent": "curl/8"})
         with urllib.request.urlopen(req, timeout=30) as r:
             content = r.read().decode("utf-8")
         lines = [line.strip() for line in content.splitlines() if line.strip() and not line.strip().startswith("#")]
-        print(f"✓ fetched {len(lines)} repos from {NODE_LIST_URL}")
+        print(f"✓ fetched {len(lines)} repos from {CUSTOM_NODE_URL_LIST}")
         return lines
     except Exception as e:
         print(f"⚠ Failed to fetch node list: {e}")
@@ -190,11 +196,11 @@ def download_models_if_enabled() -> None:
         file_list_path = workspace / "download_list.txt"
         tmp = file_list_path.with_suffix(file_list_path.suffix + ".part")
 
-        req = urllib.request.Request(LIST_URL_ENV, headers={"User-Agent": "curl/8"})
+        req = urllib.request.Request(MODELS_URL_LIST, headers={"User-Agent": "curl/8"})
         with urllib.request.urlopen(req, timeout=30) as r, open(tmp, "wb") as f:
             shutil.copyfileobj(r, f)
         tmp.replace(file_list_path)
-        print(f"✓ downloaded: {file_list_path}  ← {LIST_URL_ENV}")
+        print(f"✓ downloaded: {file_list_path}  ← {MODELS_URL_LIST}")
         print("Downloading models now.....")
 
         stage_dir = workspace / "_hfstage"
