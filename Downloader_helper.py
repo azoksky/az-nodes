@@ -60,9 +60,9 @@ def _ensure_aria2_daemon():
             return
         except Exception:
             time.sleep(0.15)
-    _aria2_rpc("getVersion")
+    _aria2_rpc("getVersion")  # raise if still not up
 
-# ========= Helpers =========
+# ========= Filename helpers =========
 _SANITIZE_RE = re.compile(r'[\\/:*?"<>|\x00-\x1F]')
 
 def _sanitize_filename(name: str) -> str:
@@ -74,19 +74,25 @@ def _safe_expand(path_str: str) -> str:
 def _parse_cd_filename(cd: str) -> str | None:
     if not cd:
         return None
-    m = re.search(r'filename\*\s*=\s*[^\'";]+\'' + r"'" + r'([^;]+)', cd, flags=re.IGNORECASE)
+    # RFC 5987: filename*=UTF-8''percent-encoded
+    m = re.search(r"filename\*\s*=\s*[^'\";]+''([^;]+)", cd, flags=re.IGNORECASE)
     if m:
         try:
             decoded = urllib.parse.unquote(m.group(1))
-            return _sanitize_filename(os.path.basename(decoded)) or None
+            n = _sanitize_filename(os.path.basename(decoded))
+            return n or None
         except Exception:
             pass
+    # filename="name"
     m = re.search(r'filename\s*=\s*"([^"]+)"', cd, flags=re.IGNORECASE)
     if m:
-        return _sanitize_filename(os.path.basename(m.group(1)))
+        n = _sanitize_filename(os.path.basename(m.group(1)))
+        return n or None
+    # filename=name
     m = re.search(r'filename\s*=\s*([^;]+)', cd, flags=re.IGNORECASE)
     if m:
-        return _sanitize_filename(os.path.basename(m.group(1).strip()))
+        n = _sanitize_filename(os.path.basename(m.group(1).strip()))
+        return n or None
     return None
 
 def _origin_from_url(u: str) -> str:
@@ -97,6 +103,7 @@ def _origin_from_url(u: str) -> str:
         return ""
 
 def _extract_query_filename(u: str) -> str | None:
+    """Common patterns used by CDNs: ?filename=, ?response-content-disposition=attachment;filename=..."""
     try:
         q = urllib.parse.parse_qs(urlparse(u).query)
         for key in ("filename", "file", "name", "response-content-disposition"):
@@ -106,12 +113,15 @@ def _extract_query_filename(u: str) -> str | None:
                     n = _parse_cd_filename(candidate)
                     if n:
                         return n
-                return _sanitize_filename(os.path.basename(candidate))
+                n = _sanitize_filename(os.path.basename(candidate))
+                if n:
+                    return n
     except Exception:
         pass
     return None
 
-def _head_follow(url: str, token: str | None = None):
+def _head_follow(url: str, max_redirects: int = 5, token: str | None = None):
+    """HEAD first; if disallowed, try GET without reading body."""
     opener = urllib.request.build_opener()
     headers = {"Authorization": f"Bearer {token}"} if token else {}
     req = urllib.request.Request(url, method="HEAD", headers=headers)
@@ -124,9 +134,16 @@ def _head_follow(url: str, token: str | None = None):
         raise
 
 def _smart_guess_filename(url: str, token: str | None = None) -> tuple[str | None, bool]:
+    """
+    Returns (name, confident).
+    confident=True only when derived from Content-Disposition or explicit query filename.
+    """
+    # 1) Query param hints
     qn = _extract_query_filename(url)
     if qn:
         return (qn, True)
+
+    # 2) HEAD/GET headers
     try:
         resp = _head_follow(url, token=token)
         cd = resp.headers.get("Content-Disposition") or resp.headers.get("content-disposition")
@@ -135,11 +152,16 @@ def _smart_guess_filename(url: str, token: str | None = None) -> tuple[str | Non
             return (n, True)
     except Exception:
         pass
+
+    # 3) URL path (not confident)
     try:
         path_name = os.path.basename(urlparse(url).path)
-        return (_sanitize_filename(path_name), False) if path_name else (None, False)
+        path_name = _sanitize_filename(path_name)
+        if path_name:
+            return (path_name, False)
     except Exception:
-        return (None, False)
+        pass
+    return (None, False)
 
 def _eta(total_len, done_len, speed):
     try:
@@ -149,26 +171,25 @@ def _eta(total_len, done_len, speed):
     except Exception:
         return None
 
-def _resolve_token(url: str, body_token: str | None) -> str:
-    if body_token:
-        return body_token
-    if "huggingface.co" in url and HF_TOKEN:
-        return HF_TOKEN
-    if "civitai.com" in url and CIVIT_TOKEN:
-        return CIVIT_TOKEN
-    return ""
-
-# ========= API =========
+# ========= API routes =========
 @PromptServer.instance.routes.post("/aria2/start")
 async def aria2_start(request):
     body = await request.json()
     url = (body.get("url") or "").strip()
     dest_dir = _safe_expand(body.get("dest_dir") or os.getcwd())
-    user_token = (body.get("token") or "").strip()
-    token = _resolve_token(url, user_token)
+    token = (body.get("token") or "").strip()
 
     if not url:
         return web.json_response({"error": "URL is required."}, status=400)
+
+    # Determine token if not provided
+    if not token:
+        lower = url.lower()
+        if "huggingface.co" in lower:
+            token = HF_TOKEN
+        elif "civitai.com" in lower:
+            token = CIVIT_TOKEN
+
     try:
         os.makedirs(dest_dir, exist_ok=True)
     except Exception as e:
@@ -182,6 +203,7 @@ async def aria2_start(request):
         return web.json_response({"error": str(e)}, status=500)
 
     guessed_name, confident = _smart_guess_filename(url, token=token)
+
     opts = {
         "continue": "true",
         "max-connection-per-server": "16",
@@ -193,7 +215,7 @@ async def aria2_start(request):
         "header": [
             "Accept: */*",
             "Accept-Language: en-US,en;q=0.9",
-            "User-Agent: Mozilla/5.0",
+            "User-Agent: Mozilla/5.0"
         ],
         "max-tries": "5",
     }
@@ -213,7 +235,7 @@ async def aria2_start(request):
         return web.json_response({
             "gid": gid,
             "dest_dir": dest_dir,
-            "guessed_out": opts.get("out", ""),
+            "guessed_out": opts.get("out", "") or "",
             "confident": bool(confident),
         })
     except Exception as e:
@@ -225,14 +247,10 @@ async def aria2_status(request):
     if not gid:
         return web.json_response({"error": "gid is required."}, status=400)
     try:
-        res = _aria2_rpc("tellStatus", [gid, [
-            "status", "totalLength", "completedLength", "downloadSpeed",
-            "errorMessage", "files", "dir"
-        ]])
+        res = _aria2_rpc("tellStatus", [gid, ["status", "totalLength", "completedLength", "downloadSpeed", "errorMessage", "files", "dir"]])
         st = res.get("result", {})
     except Exception as e:
         return web.json_response({"error": f"aria2c RPC error: {e}"}, status=500)
-
     status = st.get("status", "unknown")
     total = int(st.get("totalLength", "0") or "0")
     done = int(st.get("completedLength", "0") or "0")
@@ -241,17 +259,14 @@ async def aria2_status(request):
 
     filepath = ""
     filename = ""
-    try:
-        files = st.get("files") or []
-        if files:
-            fp = files[0].get("path") or ""
-            if fp:
-                filepath = fp
-                filename = os.path.basename(fp)
-        if not filepath and st.get("dir") and filename:
-            filepath = os.path.join(st["dir"], filename)
-    except Exception:
-        pass
+    files = st.get("files") or []
+    if files:
+        fp = files[0].get("path") or ""
+        if fp:
+            filepath = fp
+            filename = os.path.basename(fp)
+    if not filepath and st.get("dir") and filename:
+        filepath = os.path.join(st["dir"], filename)
 
     out = {
         "status": status,
@@ -279,13 +294,21 @@ async def aria2_stop(request):
     except Exception as e:
         return web.json_response({"error": f"aria2c RPC error: {e}"}, status=500)
 
+@PromptServer.instance.routes.get("/tokens")
+async def tokens(request):
+    hf_suffix = HF_TOKEN[-4:] if HF_TOKEN and len(HF_TOKEN) >= 4 else HF_TOKEN or ""
+    civit_suffix = CIVIT_TOKEN[-4:] if CIVIT_TOKEN and len(CIVIT_TOKEN) >= 4 else CIVIT_TOKEN or ""
+    return web.json_response({"hf": hf_suffix, "civit": civit_suffix})
+
 # ========= UI-only node =========
 class Aria2Downloader:
     @classmethod
     def INPUT_TYPES(cls):
-        return {"required": {}}
+        return {"required": {}}  # no backend auto-widgets
+
     RETURN_TYPES = ()
     FUNCTION = "noop"
     CATEGORY = "AZ_Nodes"
+
     def noop(self):
         return ()
