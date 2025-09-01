@@ -6,6 +6,7 @@ import time
 import shutil
 import urllib.request
 import urllib.parse
+import urllib.error
 from urllib.parse import urlparse, urlunparse
 from uuid import uuid4
 from subprocess import Popen, DEVNULL
@@ -62,7 +63,7 @@ def _ensure_aria2_daemon():
             time.sleep(0.15)
     _aria2_rpc("getVersion")  # raise if still not up
 
-# ========= Filename helpers =========
+# ========= Helpers =========
 _SANITIZE_RE = re.compile(r'[\\/:*?"<>|\x00-\x1F]')
 
 def _sanitize_filename(name):
@@ -74,6 +75,7 @@ def _safe_expand(path_str):
 def _parse_cd_filename(cd):
     if not cd:
         return None
+    # RFC 5987: filename*=UTF-8''percent-encoded
     m = re.search(r"filename\*\s*=\s*[^'\";]+''([^;]+)", cd, flags=re.IGNORECASE)
     if m:
         try:
@@ -82,10 +84,12 @@ def _parse_cd_filename(cd):
             return n or None
         except Exception:
             pass
+    # filename="name"
     m = re.search(r'filename\s*=\s*"([^"]+)"', cd, flags=re.IGNORECASE)
     if m:
         n = _sanitize_filename(os.path.basename(m.group(1)))
         return n or None
+    # filename=name
     m = re.search(r'filename\s*=\s*([^;]+)', cd, flags=re.IGNORECASE)
     if m:
         n = _sanitize_filename(os.path.basename(m.group(1).strip()))
@@ -100,6 +104,7 @@ def _origin_from_url(u):
         return ""
 
 def _extract_query_filename(u):
+    """Look for CDN hints like ?filename=, ?file=, ?name=, or response-content-disposition=."""
     try:
         q = urllib.parse.parse_qs(urlparse(u).query)
         for key in ("filename", "file", "name", "response-content-disposition"):
@@ -116,38 +121,103 @@ def _extract_query_filename(u):
         pass
     return None
 
-def _head_follow(url, max_redirects=5, token=None):
-    opener = urllib.request.build_opener()
-    headers = {"Authorization": f"Bearer {token}"} if token else {}
-    req = urllib.request.Request(url, method="HEAD", headers=headers)
+def _append_or_replace_query_param(url, key, value):
+    """Safely add/replace a query parameter even if URL already has ?/&."""
     try:
-        return opener.open(req, timeout=10)
-    except urllib.error.HTTPError as e:
-        if e.code in (403, 405):
-            req_get = urllib.request.Request(url, method="GET", headers=headers)
-            return opener.open(req_get, timeout=10)
-        raise
+        p = urlparse(url)
+        q = urllib.parse.parse_qs(p.query, keep_blank_values=True)
+        q[key] = [value]
+        newq = urllib.parse.urlencode(q, doseq=True)
+        return urlunparse((p.scheme, p.netloc, p.path, p.params, newq, p.fragment))
+    except Exception:
+        return url
 
-def _smart_guess_filename(url, token=None):
-    qn = _extract_query_filename(url)
-    if qn:
-        return (qn, True)
+def _is_probably_login(final_url, headers):
+    """Detect HTML login bounce (e.g., civitai.com/login) to avoid saving 'login' pages."""
     try:
-        resp = _head_follow(url, token=token)
-        cd = resp.headers.get("Content-Disposition") or resp.headers.get("content-disposition")
-        n = _parse_cd_filename(cd) if cd else None
-        if n:
-            return (n, True)
+        ct = (headers.get("Content-Type") or headers.get("content-type") or "").lower()
+        path = urlparse(final_url).path.lower()
+        base = os.path.basename(path)
+        if "text/html" in ct and ("login" in path or base in ("login", "signin", "log-in")):
+            return True
     except Exception:
         pass
+    return False
+
+def _probe_url(url, extra_headers=None):
+    """
+    Probe URL with HEAD; on 400/401/403/405 fall back to GET with Range: bytes=0-0.
+    Returns dict: {ok, status, final_url, headers, filename, confident, note}
+    """
+    extra_headers = extra_headers or {}
+    base_headers = {
+        "Accept": "*/*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "User-Agent": "Mozilla/5.0",
+    }
+    hdr = dict(base_headers)
+    hdr.update(extra_headers)
+
+    opener = urllib.request.build_opener()
+
+    def _make(req_method, add_range=False):
+        h = dict(hdr)
+        if add_range:
+            h["Range"] = "bytes=0-0"
+        return urllib.request.Request(url, method=req_method, headers=h)
+
+    # Try HEAD
     try:
-        path_name = os.path.basename(urlparse(url).path)
-        path_name = _sanitize_filename(path_name)
-        if path_name:
-            return (path_name, False)
+        resp = opener.open(_make("HEAD"), timeout=10)
+        status = resp.getcode()
+        final_url = resp.geturl()
+        h = resp.headers or {}
+        if _is_probably_login(final_url, h):
+            return {"ok": False, "status": status, "final_url": final_url, "headers": h, "filename": None, "confident": False, "note": "login_html"}
+    except urllib.error.HTTPError as e:
+        # some hosts reject HEAD; try GET with Range
+        if e.code in (400, 401, 403, 405):
+            try:
+                resp = opener.open(_make("GET", add_range=True), timeout=10)
+                status = resp.getcode()
+                final_url = resp.geturl()
+                h = resp.headers or {}
+                if _is_probably_login(final_url, h):
+                    return {"ok": False, "status": status, "final_url": final_url, "headers": h, "filename": None, "confident": False, "note": "login_html"}
+            except urllib.error.HTTPError as ee:
+                return {"ok": False, "status": ee.code, "final_url": url, "headers": dict(ee.headers or {}), "filename": None, "confident": False, "note": "http_error"}
+            except Exception:
+                return {"ok": False, "status": 0, "final_url": url, "headers": {}, "filename": None, "confident": False, "note": "exception"}
+        else:
+            return {"ok": False, "status": e.code, "final_url": url, "headers": dict(e.headers or {}), "filename": None, "confident": False, "note": "http_error"}
     except Exception:
-        pass
-    return (None, False)
+        return {"ok": False, "status": 0, "final_url": url, "headers": {}, "filename": None, "confident": False, "note": "exception"}
+
+    # If here, we have resp
+    cd = resp.headers.get("Content-Disposition") or resp.headers.get("content-disposition")
+    n_from_cd = _parse_cd_filename(cd) if cd else None
+    qname = _extract_query_filename(final_url)
+    confident = bool(n_from_cd or (qname is not None))
+    filename = n_from_cd or qname
+    if not filename:
+        try:
+            filename = _sanitize_filename(os.path.basename(urlparse(final_url).path))
+        except Exception:
+            filename = None
+
+    ok = 200 <= status < 300 or status == 206
+    if _is_probably_login(final_url, resp.headers):
+        ok = False
+
+    return {
+        "ok": bool(ok),
+        "status": status,
+        "final_url": final_url,
+        "headers": dict(resp.headers or {}),
+        "filename": filename,
+        "confident": confident,
+        "note": "",
+    }
 
 def _eta(total_len, done_len, speed):
     try:
@@ -157,24 +227,86 @@ def _eta(total_len, done_len, speed):
     except Exception:
         return None
 
+def _negotiate_access(url, token):
+    """
+    Follow your rules:
+      - If token is empty: use plain URL only.
+      - If token present: try in order:
+          1) Authorization: Bearer <token>
+          2) URL ?token=<token> (safely merged)
+          3) X-Api-Key: <token>
+          4) Cookie: token=<token>
+          5) Plain URL
+    Return: {ok, url, headers, filename, confident, strategy, status, attempts}
+    Each attempt entry: {name, url, status, ok, note}
+    """
+    attempts = []
+    strategies = []
+
+    token = (token or "").strip()
+
+    if token:
+        strategies.append(("auth_header", url, {"Authorization": "Bearer {}".format(token)}))
+        strategies.append(("query_token", _append_or_replace_query_param(url, "token", token), {}))
+        strategies.append(("x_api_key", url, {"X-Api-Key": token}))
+        strategies.append(("cookie_token", url, {"Cookie": "token={}".format(token)}))
+    # Always try plain at the end (works for public links, HF public files, etc.)
+    strategies.append(("plain", url, {}))
+
+    # If no token at all, skip straight to plain
+    if not token:
+        strategies = [("plain", url, {})]
+
+    chosen = None
+    for name, u, hdr in strategies:
+        probe = _probe_url(u, hdr)
+        attempts.append({
+            "name": name,
+            "url": u,
+            "status": probe.get("status", 0),
+            "ok": bool(probe.get("ok", False)),
+            "note": probe.get("note", ""),
+        })
+        if probe.get("ok"):
+            chosen = {
+                "ok": True,
+                "url": u,
+                "headers": hdr,
+                "filename": probe.get("filename"),
+                "confident": probe.get("confident", False),
+                "strategy": name,
+                "status": probe.get("status", 0),
+                "attempts": attempts,
+            }
+            break
+
+    if chosen:
+        return chosen
+
+    # nothing worked
+    last = attempts[-1] if attempts else {}
+    return {
+        "ok": False,
+        "url": url,
+        "headers": {},
+        "filename": None,
+        "confident": False,
+        "strategy": "none",
+        "status": last.get("status", 0),
+        "attempts": attempts,
+    }
+
 # ========= API routes =========
 @PromptServer.instance.routes.post("/aria2/start")
 async def aria2_start(request):
     body = await request.json()
     url = (body.get("url") or "").strip()
     dest_dir = _safe_expand(body.get("dest_dir") or os.getcwd())
+    # IMPORTANT: do NOT auto-fill token from env here (respect rule 2).
     token = (body.get("token") or "").strip()
 
     if not url:
         return web.json_response({"error": "URL is required."}, status=400)
-
-    # Determine token if not provided
-    if not token:
-        lower = url.lower()
-        if ("huggingface.co" in lower) or ("cdn-lfs.huggingface.co" in lower):
-            token = HF_TOKEN
-        elif "civitai.com" in lower:
-            token = CIVIT_TOKEN
 
     try:
         os.makedirs(dest_dir, exist_ok=True)
@@ -188,8 +320,16 @@ async def aria2_start(request):
     except Exception as e:
         return web.json_response({"error": str(e)}, status=500)
 
-    guessed_name, confident = _smart_guess_filename(url, token=token)
+    # Negotiate according to rules
+    nego = _negotiate_access(url, token)
 
+    if not nego.get("ok"):
+        return web.json_response({
+            "error": "Could not access the URL with any strategy.",
+            "attempts": nego.get("attempts", []),
+        }, status=400)
+
+    # Build aria2 options
     opts = {
         "continue": "true",
         "max-connection-per-server": "16",
@@ -201,20 +341,28 @@ async def aria2_start(request):
         "header": [
             "Accept: */*",
             "Accept-Language: en-US,en;q=0.9",
-            "User-Agent: Mozilla/5.0"
+            "User-Agent: Mozilla/5.0",
         ],
         "max-tries": "5",
     }
-    if token:
-        opts["header"].append("Authorization: Bearer {}".format(token))
-    origin = _origin_from_url(url)
+
+    # Apply negotiated headers
+    for k, v in (nego.get("headers") or {}).items():
+        opts["header"].append(f"{k}: {v}")
+
+    # Referer
+    origin = _origin_from_url(nego.get("url") or url)
     if origin:
         opts["referer"] = origin
-    if confident and guessed_name:
-        opts["out"] = guessed_name
+
+    # Filename if confident
+    if nego.get("confident") and nego.get("filename"):
+        opts["out"] = nego["filename"]
+
+    final_url = nego.get("url") or url
 
     try:
-        res = _aria2_rpc("addUri", [[url], opts])
+        res = _aria2_rpc("addUri", [[final_url], opts])
         gid = res.get("result")
         if not gid:
             return web.json_response({"error": "aria2c did not return a gid."}, status=500)
@@ -222,10 +370,13 @@ async def aria2_start(request):
             "gid": gid,
             "dest_dir": dest_dir,
             "guessed_out": opts.get("out", "") or "",
-            "confident": bool(confident),
+            "confident": bool(nego.get("confident")),
+            "strategy": nego.get("strategy", "unknown"),
+            "probe_status": nego.get("status", 0),
+            "attempts": nego.get("attempts", []),
         })
     except Exception as e:
-        return web.json_response({"error": "aria2c RPC error: {}".format(e)}, status=500)
+        return web.json_response({"error": f"aria2c RPC error: {e}"}, status=500)
 
 @PromptServer.instance.routes.get("/aria2/status")
 async def aria2_status(request):
@@ -236,7 +387,7 @@ async def aria2_status(request):
         res = _aria2_rpc("tellStatus", [gid, ["status", "totalLength", "completedLength", "downloadSpeed", "errorMessage", "files", "dir"]])
         st = res.get("result", {})
     except Exception as e:
-        return web.json_response({"error": "aria2c RPC error: {}".format(e)}, status=500)
+        return web.json_response({"error": f"aria2c RPC error: {e}"}, status=500)
     status = st.get("status", "unknown")
     total = int(st.get("totalLength", "0") or "0")
     done = int(st.get("completedLength", "0") or "0")
@@ -278,7 +429,7 @@ async def aria2_stop(request):
         _aria2_rpc("remove", [gid])
         return web.json_response({"ok": True})
     except Exception as e:
-        return web.json_response({"error": "aria2c RPC error: {}".format(e)}, status=500)
+        return web.json_response({"error": f"aria2c RPC error: {e}"}, status=500)
 
 @PromptServer.instance.routes.get("/az/listdir")
 async def az_listdir(request):
@@ -315,6 +466,7 @@ async def tokens(request):
 
 @PromptServer.instance.routes.get("/tokens/resolve")
 async def tokens_resolve(request):
+    # Used by the UI to auto-fill the token field from env based on URL domain
     url = (request.query.get("url") or "").lower()
     token = ""
     if ("huggingface.co" in url) or ("cdn-lfs.huggingface.co" in url):
