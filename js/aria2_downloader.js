@@ -1,13 +1,25 @@
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
 
+function injectCSSOnce() {
+  const id = "az-aria2-css";
+  if (document.getElementById(id)) return;
+  const style = document.createElement("style");
+  style.id = id;
+  style.textContent =
+    ".az-row{width:100%}" +
+    ".az-btn{padding:8px 14px;border:1px solid #555;border-radius:6px;background:#2f75ff;color:#fff;cursor:pointer}" +
+    ".az-btn:disabled{opacity:.6;cursor:not-allowed}" +
+    ".az-btn-secondary{background:#333;color:#ddd}" +
+    ".az-flex{display:flex;gap:8px;align-items:center;justify-content:center;width:100%}";
+  document.head.appendChild(style);
+}
+
 function fmtBytes(bytes) {
   if (!bytes || bytes <= 0) return "0 B";
   const units = ["B", "KB", "MB", "GB", "TB"];
   let i = 0, v = bytes;
-  while (v >= 1024 && i < units.length - 1) {
-    v /= 1024; i++;
-  }
+  while (v >= 1024 && i < units.length - 1) { v /= 1024; i++; }
   const decimals = v < 10 && i > 0 ? 1 : 0;
   return v.toFixed(decimals) + " " + units[i];
 }
@@ -15,12 +27,19 @@ function fmtBytes(bytes) {
 function fmtETA(sec) {
   if (sec == null || !isFinite(sec)) return "--";
   sec = Math.max(0, sec | 0);
-  const h = Math.floor(sec / 3600);
-  const m = Math.floor((sec % 3600) / 60);
-  const s = sec % 60;
+  const h = Math.floor(sec / 3600), m = Math.floor((sec % 3600) / 60), s = sec % 60;
   if (h) return h + "h " + m + "m";
   if (m) return m + "m " + s + "s";
   return s + "s";
+}
+
+function ensureActiveVisible(dropdown, activeIndex) {
+  if (activeIndex < 0 || activeIndex >= dropdown.children.length) return;
+  const el = dropdown.children[activeIndex];
+  const top = el.offsetTop, bottom = top + el.offsetHeight;
+  const viewTop = dropdown.scrollTop, viewBottom = viewTop + dropdown.clientHeight;
+  if (top < viewTop) dropdown.scrollTop = top;
+  else if (bottom > viewBottom) dropdown.scrollTop = bottom - dropdown.clientHeight;
 }
 
 app.registerExtension({
@@ -31,6 +50,7 @@ app.registerExtension({
 
     nodeType.prototype.onNodeCreated = function () {
       const r = orig ? orig.apply(this, arguments) : undefined;
+      injectCSSOnce();
 
       // Persisted properties
       this.properties = this.properties || {};
@@ -39,43 +59,85 @@ app.registerExtension({
       this.properties.dest_dir = this.properties.dest_dir || "";
       this.serialize_widgets = true;
 
-      // Poll timer holder and token auto-fill state
+      // State
+      this.gid = null;
       this._pollTimer = null;
-      this._autoToken = !this.properties.token;
+      this._status = "Idle";
+      this._progress = 0;
+      this._speed = 0;
+      this._eta = null;
+      this._filename = "";
+      this._filepath = "";
+      this._startTS = null;
+      this._elapsedSec = 0;
+      this._autoToken = (this.properties.token || "").trim() === "";
 
-      // --- Destination input with dropdown (portal) ---
+      const rowH = 40;
+
+      // URL input (top)
+      const urlInput = document.createElement("input");
+      urlInput.type = "text";
+      urlInput.placeholder = "URL";
+      urlInput.value = this.properties.url || "";
+      Object.assign(urlInput.style, {
+        width: "100%", height: "26px", padding: "8px",
+        border: "1px solid #444", borderRadius: "6px",
+        background: "var(--comfy-input-bg, #2a2a2a)", color: "#ddd",
+        boxSizing: "border-box", outline: "none"
+      });
+      const urlWidget = this.addDOMWidget("url", "URL", urlInput);
+      urlWidget.computeSize = () => [this.size[0] - 20, rowH];
+
+      // Token input + hint (second)
+      const tokenRow = document.createElement("div");
+      tokenRow.className = "az-row az-flex";
+
+      const tokenInput = document.createElement("input");
+      tokenInput.type = "password";
+      tokenInput.placeholder = "Secret Token";
+      tokenInput.value = this.properties.token || "";
+      Object.assign(tokenInput.style, {
+        flex: "1", height: "26px", padding: "8px",
+        border: "1px solid #444", borderRadius: "6px",
+        background: "var(--comfy-input-bg, #2a2a2a)", color: "#ddd",
+        boxSizing: "border-box", outline: "none"
+      });
+
+      const tokenHint = document.createElement("span");
+      tokenHint.style.color = "#888";
+      tokenHint.style.fontSize = "12px";
+
+      tokenRow.appendChild(tokenInput);
+      tokenRow.appendChild(tokenHint);
+      const tokenWidget = this.addDOMWidget("token", "Token", tokenRow);
+      tokenWidget.computeSize = () => [this.size[0] - 20, rowH];
+
+      tokenInput.addEventListener("input", () => {
+        this._autoToken = false;
+        this.properties.token = tokenInput.value;
+      });
+
+      // Destination input (third, below token) with dropdown
       const container = document.createElement("div");
       Object.assign(container.style, { position: "relative", width: "100%" });
 
       const destInput = document.createElement("input");
       destInput.type = "text";
       destInput.placeholder = "Destination folder (e.g. C:/Users/you/Downloads)";
-      Object.assign(destInput.style, {
-        width: "100%",
-        height: "26px",
-        padding: "8px",
-        border: "1px solid #444",
-        borderRadius: "6px",
-        background: "var(--comfy-input-bg, #2a2a2a)",
-        color: "#ddd",
-        boxSizing: "border-box",
-        outline: "none"
-      });
       destInput.value = this.properties.dest_dir || "";
+      Object.assign(destInput.style, {
+        width: "100%", height: "26px", padding: "8px",
+        border: "1px solid #444", borderRadius: "6px",
+        background: "var(--comfy-input-bg, #2a2a2a)", color: "#ddd",
+        boxSizing: "border-box", outline: "none"
+      });
 
       const dropdown = document.createElement("div");
       Object.assign(dropdown.style, {
-        position: "fixed",
-        background: "#222",
-        border: "1px solid #555",
-        zIndex: "999999",
-        display: "none",
-        maxHeight: "200px",
-        overflowY: "auto",
-        fontSize: "12px",
-        borderRadius: "6px",
-        minWidth: "180px",
-        boxShadow: "0 8px 16px rgba(0,0,0,.35)"
+        position: "fixed", background: "#222", border: "1px solid #555",
+        zIndex: "999999", display: "none", maxHeight: "200px",
+        overflowY: "auto", fontSize: "12px", borderRadius: "6px",
+        minWidth: "180px", boxShadow: "0 8px 16px rgba(0,0,0,.35)"
       });
       document.body.appendChild(dropdown);
 
@@ -88,38 +150,26 @@ app.registerExtension({
 
       container.appendChild(destInput);
       const destWidget = this.addDOMWidget("dest_dir", "Destination", container);
-      destWidget.computeSize = () => [this.size[0] - 20, 34];
+      destWidget.computeSize = () => [this.size[0] - 20, rowH];
 
-      let items = [], active = -1, debounceTimer = null;
-
-      const ensureActiveVisible = () => {
-        if (active >= 0 && active < dropdown.children.length) {
-          const el = dropdown.children[active];
-          const top = el.offsetTop;
-          const bottom = top + el.offsetHeight;
-          const viewTop = dropdown.scrollTop;
-          const viewBottom = viewTop + dropdown.clientHeight;
-          if (top < viewTop) dropdown.scrollTop = top;
-          else if (bottom > viewBottom) dropdown.scrollTop = bottom - dropdown.clientHeight;
-        }
-      };
+      let items = []; let active = -1; let debounceTimer = null;
 
       const renderDropdown = () => {
-        const prevScrollTop = dropdown.scrollTop;
+        const prevScroll = dropdown.scrollTop;
         dropdown.innerHTML = "";
-        if (!items.length) { dropdown.style.display = "none"; active = -1; return; }
-        items.forEach((it, idx) => {
+        if (!items.length) {
+          dropdown.style.display = "none"; active = -1; return;
+        }
+        for (let idx = 0; idx < items.length; idx++) {
+          const it = items[idx];
           const row = document.createElement("div");
           row.textContent = it.name;
           Object.assign(row.style, {
-            padding: "6px 10px",
-            cursor: "pointer",
-            whiteSpace: "nowrap",
-            background: idx === active ? "#444" : "transparent",
-            userSelect: "none"
+            padding: "6px 10px", cursor: "pointer", whiteSpace: "nowrap",
+            background: idx === active ? "#444" : "transparent", userSelect: "none"
           });
-          row.addEventListener("pointerdown", (e) => {
-            e.preventDefault(); e.stopPropagation();
+          row.addEventListener("mousedown", (e) => {
+            e.preventDefault();
             const chosen = it.path.replace(/\\/g, "/").replace(/\/{2,}/g, "/");
             destInput.value = chosen;
             this.properties.dest_dir = chosen;
@@ -129,16 +179,11 @@ app.registerExtension({
           });
           row.onmouseenter = () => { active = idx; renderDropdown(); };
           dropdown.appendChild(row);
-        });
+        }
         placeDropdown();
         dropdown.style.display = "block";
-        dropdown.scrollTop = prevScrollTop;
-        ensureActiveVisible();
-      };
-
-      const scheduleFetch = () => {
-        clearTimeout(debounceTimer);
-        debounceTimer = setTimeout(fetchChildren, 180);
+        dropdown.scrollTop = prevScroll;
+        ensureActiveVisible(dropdown, active);
       };
 
       const fetchChildren = async () => {
@@ -149,15 +194,22 @@ app.registerExtension({
           const resp = await api.fetchApi("/az/listdir?path=" + encodeURIComponent(val));
           const data = await resp.json();
           if (data && data.ok && Array.isArray(data.folders)) {
-            items = data.folders.map((f) => ({ name: f.name, path: (data.root || val) + "/" + f.name }));
+            items = data.folders.map(function (f) {
+              return { name: f.name, path: ((data.root || val) + "/" + f.name).replace(/\\/g, "/").replace(/\/{2,}/g, "/") };
+            });
           } else {
             items = [];
           }
-        } catch {
+        } catch (e) {
           items = [];
         }
         active = items.length ? 0 : -1;
         renderDropdown();
+      };
+
+      const scheduleFetch = () => {
+        clearTimeout(debounceTimer);
+        debounceTimer = setTimeout(fetchChildren, 180);
       };
 
       destInput.addEventListener("input", () => {
@@ -177,20 +229,23 @@ app.registerExtension({
 
       destInput.addEventListener("focus", () => {
         placeDropdown();
-        scheduleFetch();
+        fetchChildren();
       });
 
       destInput.addEventListener("keydown", (e) => {
         if (dropdown.style.display !== "block" || !items.length) return;
-        if (e.key === "ArrowDown") { e.preventDefault(); active = (active + 1) % items.length; renderDropdown(); ensureActiveVisible(); }
-        else if (e.key === "ArrowUp")   { e.preventDefault(); active = (active - 1 + items.length) % items.length; renderDropdown(); ensureActiveVisible(); }
-        else if (e.key === "Enter" && active >= 0) {
+        if (e.key === "ArrowDown") {
+          e.preventDefault(); active = (active + 1) % items.length; renderDropdown(); ensureActiveVisible(dropdown, active);
+        } else if (e.key === "ArrowUp") {
+          e.preventDefault(); active = (active - 1 + items.length) % items.length; renderDropdown(); ensureActiveVisible(dropdown, active);
+        } else if (e.key === "Enter" && active >= 0) {
           e.preventDefault();
           const it = items[active];
           const chosen = it.path.replace(/\\/g, "/").replace(/\/{2,}/g, "/");
           destInput.value = chosen;
           this.properties.dest_dir = chosen;
-          items = []; active = -1; dropdown.style.display = "none";
+          items = []; active = -1;
+          dropdown.style.display = "none";
           scheduleFetch();
         } else if (e.key === "Escape") {
           dropdown.style.display = "none"; items = []; active = -1;
@@ -198,65 +253,21 @@ app.registerExtension({
       });
 
       destInput.addEventListener("blur", () => {
-        setTimeout(() => { dropdown.style.display = "none"; }, 120);
+        setTimeout(function () { dropdown.style.display = "none"; }, 120);
       });
 
-      // --- URL input ---
-      const urlInput = document.createElement("input");
-      urlInput.type = "text";
-      urlInput.placeholder = "URL";
-      Object.assign(urlInput.style, {
-        width: "100%",
-        height: "26px",
-        padding: "8px",
-        border: "1px solid #444",
-        borderRadius: "6px",
-        background: "var(--comfy-input-bg, #2a2a2a)",
-        color: "#ddd",
-        boxSizing: "border-box",
-        outline: "none"
-      });
-      urlInput.value = this.properties.url || "";
-      const urlWidget = this.addDOMWidget("url", "URL", urlInput);
-      urlWidget.computeSize = () => [this.size[0] - 20, 34];
-
-      // --- Token input ---
-      const tokenInput = document.createElement("input");
-      tokenInput.type = "password";
-      tokenInput.placeholder = "Secret Token";
-      Object.assign(tokenInput.style, {
-        width: "100%",
-        height: "26px",
-        padding: "8px",
-        border: "1px solid #444",
-        borderRadius: "6px",
-        background: "var(--comfy-input-bg, #2a2a2a)",
-        color: "#ddd",
-        boxSizing: "border-box",
-        outline: "none"
-      });
-      tokenInput.value = this.properties.token || "";
-      const tokenWidget = this.addDOMWidget("token", "TOKEN", tokenInput);
-      tokenWidget.computeSize = () => [this.size[0] - 20, 34];
-
-      tokenInput.addEventListener("input", () => {
-        this._autoToken = false;
-        this.properties.token = tokenInput.value;
-      });
-
-      // Token hint
-      const hintWidget = this.addWidget("info", "Token Hint", "");
+      // Token hint (last-4)
       api.fetchApi("/tokens")
-        .then((res) => res.json())
+        .then(function (res) { return res.json(); })
         .then((data) => {
-          const hints = [];
-          if (data && data.hf) hints.push("HF ..." + data.hf);
-          if (data && data.civit) hints.push("Civit ..." + data.civit);
-          hintWidget.setValue(hints.join("  |  "));
+          const parts = [];
+          if (data && data.hf) parts.push("HF ..." + data.hf);
+          if (data && data.civit) parts.push("Civit ..." + data.civit);
+          tokenHint.textContent = parts.join("  |  ");
         })
-        .catch(() => {});
+        .catch(function () { });
 
-      // Resolve token for URL and auto-fill if applicable
+      // Resolve token for URL automatically
       let urlDebounce = null;
       const resolveAndApplyToken = async () => {
         const url = (urlInput.value || "").trim();
@@ -270,9 +281,8 @@ app.registerExtension({
             this.properties.token = tok;
             this._autoToken = true;
           }
-        } catch { }
+        } catch (e) { }
       };
-
       const scheduleResolveToken = () => {
         clearTimeout(urlDebounce);
         urlDebounce = setTimeout(resolveAndApplyToken, 200);
@@ -289,51 +299,76 @@ app.registerExtension({
         resolveAndApplyToken();
       });
 
-      // --- Spacer ---
-      const spacer = this.addWidget("info", "", "");
-      spacer.computeSize = () => [this.size[0] - 20, 10];
+      // DOM Buttons (row)
+      const btnRow = document.createElement("div");
+      btnRow.className = "az-row az-flex";
 
-      // --- State ---
-      this.gid = null;
-      this._status = "Idle";
-      this._progress = 0;
-      this._speed = 0;
-      this._eta = null;
-      this._filename = "";
-      this._filepath = "";
-      // Elapsed time tracking
-      this._startTS = null;
-      this._elapsedSec = 0;
+      const downloadBtn = document.createElement("button");
+      downloadBtn.className = "az-btn";
+      downloadBtn.textContent = "Download";
 
-      // --- Actions ---
-      this.addWidget("button", "Download", "Start", async () => {
+      const stopBtn = document.createElement("button");
+      stopBtn.className = "az-btn az-btn-secondary";
+      stopBtn.textContent = "Stop";
+      stopBtn.disabled = true;
+
+      btnRow.appendChild(downloadBtn);
+      btnRow.appendChild(stopBtn);
+
+      const btnWidget = this.addDOMWidget("actions", "", btnRow);
+      btnWidget.computeSize = () => [this.size[0] - 20, rowH];
+
+      // Optional: small DOM status text
+      const statusEl = document.createElement("div");
+      statusEl.style.color = "#ccc";
+      statusEl.style.fontSize = "12px";
+      statusEl.style.width = "100%";
+      statusEl.style.textAlign = "center";
+      statusEl.textContent = "Ready";
+      const statusWidget = this.addDOMWidget("status", "", statusEl);
+      statusWidget.computeSize = () => [this.size[0] - 20, 24];
+
+      const setDownloading = (on) => {
+        downloadBtn.disabled = on;
+        stopBtn.disabled = !on;
+      };
+
+      // Start download
+      downloadBtn.addEventListener("click", async () => {
         if (this.gid) return;
         const url = (urlInput.value || "").trim();
-        const dest = (this.properties.dest_dir || "").trim();
-        if (!url) { this._status = "Missing URL"; this.setDirtyCanvas(true); return; }
+        const dest = (destInput.value || "").trim();
+        const token = (tokenInput.value || "").trim();
+        if (!url) {
+          statusEl.textContent = "Missing URL";
+          return;
+        }
+        statusEl.textContent = "Starting...";
         this._status = "Starting...";
         this._progress = 0; this._speed = 0; this._eta = null;
         this._filename = ""; this._filepath = "";
-        // Start elapsed timer
         this._startTS = Date.now();
         this._elapsedSec = 0;
         this.setDirtyCanvas(true);
+        setDownloading(true);
 
         try {
           const resp = await api.fetchApi("/aria2/start", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ url: url, dest_dir: dest, token: (tokenInput.value || "").trim() })
+            body: JSON.stringify({ url: url, dest_dir: dest, token: token })
           });
           const data = await resp.json();
           if (!resp.ok || data.error) {
-            this._status = "Error: " + (data.error || resp.status);
-            this.gid = null;
+            statusEl.textContent = "Error: " + (data.error || resp.status);
+            this._status = statusEl.textContent;
+            setDownloading(false);
             this.setDirtyCanvas(true);
             return;
           }
           this.gid = data.gid;
           this._status = "Active";
+          statusEl.textContent = "Active";
           this.setDirtyCanvas(true);
 
           const poll = async () => {
@@ -343,7 +378,9 @@ app.registerExtension({
               const s = await sResp.json();
               if (s.error) {
                 this._status = "Error: " + s.error;
+                statusEl.textContent = this._status;
                 this.gid = null;
+                setDownloading(false);
                 this.setDirtyCanvas(true);
                 return;
               }
@@ -354,42 +391,55 @@ app.registerExtension({
               if (s.filename) this._filename = s.filename;
               if (s.filepath) this._filepath = s.filepath;
 
-              // Update elapsed
               if (this._startTS) {
                 this._elapsedSec = Math.max(0, ((Date.now() - this._startTS) / 1000) | 0);
               }
-
+              statusEl.textContent = "Status: " + this._status;
               this.setDirtyCanvas(true);
 
               if (["complete", "error", "removed"].includes(this._status)) {
                 this.gid = null;
+                setDownloading(false);
                 return;
               }
               this._pollTimer = setTimeout(poll, 500);
-            } catch {
+            } catch (e) {
               this._pollTimer = setTimeout(poll, 500);
             }
           };
           poll();
         } catch (e) {
           this._status = "Error starting download";
+          statusEl.textContent = this._status;
+          setDownloading(false);
           this.setDirtyCanvas(true);
         }
       });
 
-      this.addWidget("button", "Cancel", "Stop", async () => {
-        if (!this.gid) return;
+      // Stop
+      stopBtn.addEventListener("click", async () => {
+        if (!this.gid) {
+          statusEl.textContent = "Stopped.";
+          setDownloading(false);
+          return;
+        }
         try {
           await api.fetchApi("/aria2/stop", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ gid: this.gid })
           });
-        } catch {}
+          statusEl.textContent = "Stopped.";
+        } catch (e) {
+          statusEl.textContent = "Error stopping: " + e.message;
+        } finally {
+          this.gid = null;
+          setDownloading(false);
+        }
       });
 
-      // Canvas size & drawing
-      this.size = [480, 300];
+      // Canvas size & drawing (progress + meta)
+      this.size = [520, 320];
       this.onDrawForeground = (ctx) => {
         const pad = 10;
         const w = this.size[0] - pad * 2;
@@ -409,7 +459,7 @@ app.registerExtension({
           ctx.fillStyle = "#8fa3b7";
           ctx.fillText("Saved as: " + show, pad, yBar - 10);
         }
-        // Draw progress bar
+        // Progress outline
         const radius = 7;
         ctx.lineWidth = 1; ctx.strokeStyle = "#666";
         ctx.beginPath();
@@ -444,22 +494,23 @@ app.registerExtension({
         ctx.fillText(pct.toFixed(0) + "%", pad + w / 2, yBar + barH / 2);
       };
 
-      // Cleanup on node removal
+      // Reposition dropdown on scroll/resize
+      const onScroll = () => { placeDropdown(); };
+      const onResize = () => { placeDropdown(); };
+      window.addEventListener("scroll", onScroll, true);
+      window.addEventListener("resize", onResize);
+
+      // Cleanup
       const oldRemoved = this.onRemoved;
       this.onRemoved = function () {
         if (this._pollTimer) clearTimeout(this._pollTimer);
-        if (dropdown.parentNode) dropdown.parentNode.removeChild(dropdown);
+        try { if (dropdown && dropdown.parentNode) dropdown.parentNode.removeChild(dropdown); } catch (e) { }
         window.removeEventListener("scroll", onScroll, true);
         window.removeEventListener("resize", onResize);
         if (oldRemoved) oldRemoved.apply(this, arguments);
       };
 
-      function onScroll() { placeDropdown(); }
-      function onResize() { placeDropdown(); }
-      window.addEventListener("scroll", onScroll, true);
-      window.addEventListener("resize", onResize);
-
-      // Initial token resolve in case URL was persisted
+      // If persisted URL and empty token, auto-resolve once
       if (this.properties.url && (!this.properties.token || this._autoToken)) {
         urlInput.value = this.properties.url;
         resolveAndApplyToken();
