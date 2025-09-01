@@ -88,7 +88,7 @@ app.registerExtension({
       const urlWidget = this.addDOMWidget("url", "URL", urlInput);
       urlWidget.computeSize = () => [this.size[0] - 20, rowH];
 
-      // Token input + hint (second)
+      // Token input + hint
       const tokenRow = document.createElement("div");
       tokenRow.className = "az-row az-flex";
 
@@ -117,7 +117,7 @@ app.registerExtension({
         this.properties.token = tokenInput.value;
       });
 
-      // Destination input (third, below token) with dropdown
+      // Destination input (below token)
       const container = document.createElement("div");
       Object.assign(container.style, { position: "relative", width: "100%" });
 
@@ -267,7 +267,7 @@ app.registerExtension({
         })
         .catch(function () { });
 
-      // Resolve token for URL automatically
+      // Resolve token for URL automatically (old strategy; user can delete)
       let urlDebounce = null;
       const resolveAndApplyToken = async () => {
         const url = (urlInput.value || "").trim();
@@ -287,7 +287,6 @@ app.registerExtension({
         clearTimeout(urlDebounce);
         urlDebounce = setTimeout(resolveAndApplyToken, 200);
       };
-
       urlInput.addEventListener("input", () => {
         this.properties.url = urlInput.value;
         scheduleResolveToken();
@@ -299,7 +298,7 @@ app.registerExtension({
         resolveAndApplyToken();
       });
 
-      // DOM Buttons (row)
+      // DOM Buttons
       const btnRow = document.createElement("div");
       btnRow.className = "az-row az-flex";
 
@@ -318,7 +317,7 @@ app.registerExtension({
       const btnWidget = this.addDOMWidget("actions", "", btnRow);
       btnWidget.computeSize = () => [this.size[0] - 20, rowH];
 
-      // Optional: small DOM status text
+      // Small DOM status
       const statusEl = document.createElement("div");
       statusEl.style.color = "#ccc";
       statusEl.style.fontSize = "12px";
@@ -343,7 +342,7 @@ app.registerExtension({
           statusEl.textContent = "Missing URL";
           return;
         }
-        statusEl.textContent = "Starting...";
+        statusEl.textContent = "Negotiating...";
         this._status = "Starting...";
         this._progress = 0; this._speed = 0; this._eta = null;
         this._filename = ""; this._filepath = "";
@@ -360,7 +359,12 @@ app.registerExtension({
           });
           const data = await resp.json();
           if (!resp.ok || data.error) {
-            statusEl.textContent = "Error: " + (data.error || resp.status);
+            let extra = "";
+            if (data && Array.isArray(data.attempts)) {
+              const parts = data.attempts.map((a) => a.name + ":" + a.status + (a.note ? "(" + a.note + ")" : ""));
+              extra = " [tried " + parts.join(", ") + "]";
+            }
+            statusEl.textContent = "Error: " + (data.error || resp.status) + extra;
             this._status = statusEl.textContent;
             setDownloading(false);
             this.setDirtyCanvas(true);
@@ -368,7 +372,7 @@ app.registerExtension({
           }
           this.gid = data.gid;
           this._status = "Active";
-          statusEl.textContent = "Active";
+          statusEl.textContent = "Active (" + (data.strategy || "unknown") + ")";
           this.setDirtyCanvas(true);
 
           const poll = async () => {
