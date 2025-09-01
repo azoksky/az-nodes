@@ -1,5 +1,6 @@
 import os
 import json
+import asyncio
 import threading
 from uuid import uuid4
 from typing import Dict, Any
@@ -8,8 +9,12 @@ from aiohttp import web
 from server import PromptServer
 from huggingface_hub import hf_hub_download
 
-# ============ minimal job store ============
-_downloads: Dict[str, Dict[str, Any]] = {}
+# Environment tokens
+HF_TOKEN = os.environ.get("HF_READ_TOKEN", "")
+CIVIT_TOKEN = os.environ.get("CIVIT_TOKEN", "")
+
+# ============ minimal job store (no progress math) ============
+_downloads: Dict[str, Dict[str, Any]] = {}  # gid -> {state, msg, filepath, thread, cancel}
 
 def _set(gid: str, **kw):
     _downloads.setdefault(gid, {})
@@ -39,12 +44,20 @@ async def start_download(request: web.Request):
         repo_id = (data.get("repo_id") or "").strip()
         filename = (data.get("filename") or "").strip()
         dest_dir = (data.get("dest_dir") or "").strip()
-        token = (data.get("token_input") or "").strip() or os.environ.get("HF_READ_TOKEN", "")
+        token = (data.get("token_input") or "").strip()
 
         if not repo_id or not filename or not dest_dir:
             return web.json_response({"ok": False, "error": "repo_id, filename, dest_dir are required"}, status=400)
 
         os.makedirs(dest_dir, exist_ok=True)
+
+        # Determine token if not provided
+        if not token:
+            lower = repo_id.lower()
+            if "huggingface.co" in lower:
+                token = HF_TOKEN
+            elif "civitai.com" in lower:
+                token = CIVIT_TOKEN
 
         gid = data.get("gid") or uuid4().hex
         _downloads[gid] = {
@@ -55,6 +68,7 @@ async def start_download(request: web.Request):
             "thread": None,
         }
 
+        # Start download in background thread
         t = threading.Thread(target=_worker, args=(gid, repo_id, filename, dest_dir, token), daemon=True)
         _downloads[gid]["thread"] = t
         t.start()
@@ -64,6 +78,10 @@ async def start_download(request: web.Request):
         return web.json_response({"ok": False, "error": f"{type(e).__name__}: {e}"}, status=500)
 
 async def status_download(request: web.Request):
+    """
+    GET /hf/status?gid=...
+    Returns only coarse state, no progress fields.
+    """
     gid = request.query.get("gid", "")
     if gid not in _downloads:
         return web.json_response({"ok": False, "error": "unknown gid"}, status=404)
@@ -77,6 +95,10 @@ async def status_download(request: web.Request):
     })
 
 async def stop_download(request: web.Request):
+    """
+    POST /hf/stop { gid }
+    Best effort: cannot forcibly kill hf_hub_download; mark as stopped.
+    """
     try:
         data = await request.json()
         gid = (data.get("gid") or "").strip()
@@ -92,22 +114,30 @@ async def stop_download(request: web.Request):
     except Exception as e:
         return web.json_response({"ok": False, "error": f"{type(e).__name__}: {e}"}, status=500)
 
-# ============ register with ComfyUI ============
+async def tokens_endpoint(request: web.Request):
+    hf_suffix = HF_TOKEN[-4:] if HF_TOKEN and len(HF_TOKEN) >= 4 else HF_TOKEN or ""
+    civit_suffix = CIVIT_TOKEN[-4:] if CIVIT_TOKEN and len(CIVIT_TOKEN) >= 4 else CIVIT_TOKEN or ""
+    return web.json_response({"hf": hf_suffix, "civit": civit_suffix})
+
+# ============ register with ComfyUI server ============
 def _register_routes():
     app = PromptServer.instance.app
     app.router.add_post("/hf/start", start_download)
     app.router.add_get("/hf/status", status_download)
     app.router.add_post("/hf/stop", stop_download)
+    app.router.add_get("/tokens", tokens_endpoint)
 
 _register_routes()
 
-# ============ UI node shell ============
+# ============ UI node shell (no-op compute) ============
 class hf_hub_downloader:
     @classmethod
     def INPUT_TYPES(cls):
         return {"required": {}}
+
     RETURN_TYPES = []
     FUNCTION = "noop"
     CATEGORY = "AZ_Nodes"
+
     def noop(self):
         return ()
