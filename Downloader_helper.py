@@ -103,7 +103,6 @@ def _origin_from_url(u: str) -> str:
         return ""
 
 def _extract_query_filename(u: str):
-    """Common patterns used by CDNs: ?filename=, ?response-content-disposition=attachment;filename=..."""
     try:
         q = urllib.parse.parse_qs(urlparse(u).query)
         for key in ("filename", "file", "name", "response-content-disposition"):
@@ -121,7 +120,6 @@ def _extract_query_filename(u: str):
     return None
 
 def _head_follow(url: str, max_redirects: int = 5, token: str | None = None):
-    """HEAD first; if disallowed, try GET without reading body."""
     opener = urllib.request.build_opener()
     headers = {"Authorization": f"Bearer {token}"} if token else {}
     req = urllib.request.Request(url, method="HEAD", headers=headers)
@@ -134,15 +132,10 @@ def _head_follow(url: str, max_redirects: int = 5, token: str | None = None):
         raise
 
 def _smart_guess_filename(url: str, token: str | None = None):
-    """
-    Returns (name, confident).
-    confident=True only when derived from Content-Disposition or explicit query filename.
-    """
     # 1) Query param hints
     qn = _extract_query_filename(url)
     if qn:
         return (qn, True)
-
     # 2) HEAD/GET headers
     try:
         resp = _head_follow(url, token=token)
@@ -152,7 +145,6 @@ def _smart_guess_filename(url: str, token: str | None = None):
             return (n, True)
     except Exception:
         pass
-
     # 3) URL path (not confident)
     try:
         path_name = os.path.basename(urlparse(url).path)
@@ -185,7 +177,7 @@ async def aria2_start(request):
     # Determine token if not provided
     if not token:
         lower = url.lower()
-        if "huggingface.co" in lower:
+        if ("huggingface.co" in lower) or ("cdn-lfs.huggingface.co" in lower):
             token = HF_TOKEN
         elif "civitai.com" in lower:
             token = CIVIT_TOKEN
@@ -326,6 +318,20 @@ async def tokens(request):
     hf_suffix = HF_TOKEN[-4:] if HF_TOKEN and len(HF_TOKEN) >= 4 else HF_TOKEN or ""
     civit_suffix = CIVIT_TOKEN[-4:] if CIVIT_TOKEN and len(CIVIT_TOKEN) >= 4 else CIVIT_TOKEN or ""
     return web.json_response({"hf": hf_suffix, "civit": civit_suffix})
+
+@PromptServer.instance.routes.get("/tokens/resolve")
+async def tokens_resolve(request):
+    """Return the appropriate token for a given URL, so the UI can auto-fill."""
+    url = (request.query.get("url") or "").lower()
+    token = ""
+    kind = ""
+    if ("huggingface.co" in url) or ("cdn-lfs.huggingface.co" in url):
+        token = HF_TOKEN
+        kind = "hf"
+    elif "civitai.com" in url:
+        token = CIVIT_TOKEN
+        kind = "civit"
+    return web.json_response({"token": token or "", "kind": kind})
 
 # ========= UI-only node =========
 class Aria2Downloader:
