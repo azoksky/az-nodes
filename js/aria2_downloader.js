@@ -112,9 +112,30 @@ app.registerExtension({
       const tokenWidget = this.addDOMWidget("token", "Token", tokenRow);
       tokenWidget.computeSize = () => [this.size[0] - 20, rowH];
 
+      // Track server-provided last-4 token hints
+      let tokenSuffixes = { hf: "", civit: "" };
+
+      // Show hint only when a token is present; choose based on URL
+      const updateTokenHint = () => {
+        const hasToken = (tokenInput.value || "").trim().length > 0;
+        if (!hasToken) {
+          tokenHint.textContent = "";
+          return;
+        }
+        const u = (urlInput.value || "").toLowerCase();
+        if ((u.indexOf("huggingface.co") >= 0 || u.indexOf("cdn-lfs.huggingface.co") >= 0) && tokenSuffixes.hf) {
+          tokenHint.textContent = "HF ..." + tokenSuffixes.hf;
+        } else if (u.indexOf("civitai.com") >= 0 && tokenSuffixes.civit) {
+          tokenHint.textContent = "Civit ..." + tokenSuffixes.civit;
+        } else {
+          tokenHint.textContent = "••••";
+        }
+      };
+
       tokenInput.addEventListener("input", () => {
         this._autoToken = false;
         this.properties.token = tokenInput.value;
+        updateTokenHint();
       });
 
       // Destination input (below token)
@@ -256,14 +277,13 @@ app.registerExtension({
         setTimeout(function () { dropdown.style.display = "none"; }, 120);
       });
 
-      // Token hint (last-4)
+      // Fetch token suffixes once; show only if token input has value
       api.fetchApi("/tokens")
         .then(function (res) { return res.json(); })
         .then((data) => {
-          const parts = [];
-          if (data && data.hf) parts.push("HF ..." + data.hf);
-          if (data && data.civit) parts.push("Civit ..." + data.civit);
-          tokenHint.textContent = parts.join("  |  ");
+          tokenSuffixes.hf = (data && data.hf) ? data.hf : "";
+          tokenSuffixes.civit = (data && data.civit) ? data.civit : "";
+          updateTokenHint();
         })
         .catch(function () { });
 
@@ -280,6 +300,7 @@ app.registerExtension({
             tokenInput.value = tok;
             this.properties.token = tok;
             this._autoToken = true;
+            updateTokenHint();
           }
         } catch (e) { }
       };
@@ -290,12 +311,14 @@ app.registerExtension({
       urlInput.addEventListener("input", () => {
         this.properties.url = urlInput.value;
         scheduleResolveToken();
+        updateTokenHint();
       });
       urlInput.addEventListener("paste", () => {
-        setTimeout(scheduleResolveToken, 0);
+        setTimeout(() => { scheduleResolveToken(); updateTokenHint(); }, 0);
       });
       urlInput.addEventListener("blur", () => {
         resolveAndApplyToken();
+        updateTokenHint();
       });
 
       // DOM Buttons
@@ -372,7 +395,7 @@ app.registerExtension({
           }
           this.gid = data.gid;
           this._status = "Active";
-          statusEl.textContent = "Active (" + (data.strategy || "unknown") + ")";
+          statusEl.textContent = "Active" + (data.strategy ? " (" + data.strategy + ")" : "");
           this.setDirtyCanvas(true);
 
           const poll = async () => {
@@ -518,6 +541,11 @@ app.registerExtension({
       if (this.properties.url && (!this.properties.token || this._autoToken)) {
         urlInput.value = this.properties.url;
         resolveAndApplyToken();
+      }
+      // If persisted token exists, reflect it in the hint once suffixes load
+      if ((this.properties.token || "").trim() !== "") {
+        tokenInput.value = this.properties.token;
+        updateTokenHint();
       }
 
       return r;
