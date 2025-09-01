@@ -1,29 +1,25 @@
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
 
-// ---------- helpers ----------
+// Helper to create elements with attributes
 function el(tag, attrs = {}, ...children) {
   const n = document.createElement(tag);
-  const { style, ...rest } = attrs || {};
+  const { style, ...rest } = attrs;
   if (rest) Object.assign(n, rest);
-  if (style && typeof style === "object") Object.assign(n.style, style);
+  if (style) Object.assign(n.style, style);
   for (const c of children) n.append(c);
   return n;
 }
 
-// Inject CSS for indeterminate bar (scoped + forced blue)
-(function ensureIndeterminateStyle() {
-  let style = document.getElementById("hf-indeterminate-style");
-  if (style) return;
-  style = document.createElement("style");
-  style.id = "hf-indeterminate-style";
+// Inject CSS for indeterminate progress bar
+(function() {
+  const style = document.createElement("style");
   style.textContent = `
 @keyframes hfIndeterminate {
   0%   { transform: translateX(-100%); }
   50%  { transform: translateX(0%); }
   100% { transform: translateX(100%); }
 }
-/* Scoped to our wrapper */
 .az-hf-hub-downloader .hf-track {
   position: relative !important;
   height: 12px !important;
@@ -38,11 +34,10 @@ function el(tag, attrs = {}, ...children) {
   width: 36% !important;
   border-radius: 6px !important;
   animation: hfIndeterminate 1.1s linear infinite !important;
-  background: #0084ff !important;   /* force the blue */
+  background: #0084ff !important;
   opacity: 0.95 !important;
-}
-`;
-  document.head.appendChild(style);
+}`;
+  document.head.append(style);
 })();
 
 app.registerExtension({
@@ -50,9 +45,9 @@ app.registerExtension({
   async nodeCreated(node) {
     if (node.comfyClass !== "hf_hub_downloader") return;
 
-    // ====== UI (DOM) ======
+    // UI container
     const wrap = el("div", {
-      className: "az-hf-hub-downloader",  // scope for CSS
+      className: "az-hf-hub-downloader",
       style: {
         display: "flex",
         flexDirection: "column",
@@ -60,34 +55,33 @@ app.registerExtension({
         width: "100%",
         padding: "10px",
         boxSizing: "border-box",
-      }
+      },
     });
 
+    // Input fields
     const repoInput = el("input", {
       type: "text",
       placeholder: "Repository ID (e.g. runwayml/stable-diffusion-v1-5)",
       style: { width: "100%", padding: "4px", boxSizing: "border-box" }
     });
-
     const fileInput = el("input", {
       type: "text",
       placeholder: "Filename (e.g. model.safetensors)",
       style: { width: "100%", padding: "4px", boxSizing: "border-box" }
     });
-
     const tokenInput = el("input", {
       type: "text",
       placeholder: "Secret Token, if any",
       style: { width: "100%", padding: "4px", boxSizing: "border-box" }
     });
-
     const destInput = el("input", {
       type: "text",
       placeholder: "Destination folder (e.g. ./models)",
       style: { width: "100%", padding: "4px", boxSizing: "border-box" }
     });
+    wrap.append(repoInput, tokenInput, fileInput, destInput);
 
-    // === Dropdown overlay anchored to destInput (append to body, not inside wrap) ===
+    // Dropdown for dest folder autocomplete
     const dropdown = el("div", {
       style: {
         position: "fixed",
@@ -98,14 +92,12 @@ app.registerExtension({
         overflowY: "auto",
         fontSize: "12px",
         borderRadius: "6px",
-        boxShadow: "0 8px 16px rgba(0,0,0,.35)",
+        boxShadow: "0 8px 16px rgba(0,0,0,0.35)",
         zIndex: "999999",
         minWidth: "180px"
       }
     });
-    document.body.appendChild(dropdown);
-
-    // helper to place overlay under the input
+    document.body.append(dropdown);
     const placeDropdown = () => {
       const r = destInput.getBoundingClientRect();
       dropdown.style.left = `${r.left}px`;
@@ -113,19 +105,16 @@ app.registerExtension({
       dropdown.style.width = `${r.width}px`;
     };
 
-    // Append inputs (do NOT append dropdown here; it's body-level)
-    wrap.append(repoInput, tokenInput, fileInput, destInput);
-
-    // Indeterminate progress bar
+    // Progress bar and status
     const progressTrack = el("div", { className: "hf-track", style: { display: "none" } });
     const progressIndet = el("div", { className: "hf-bar" });
     progressTrack.append(progressIndet);
-
     const statusText = el("div", {
       style: { fontSize: "12px", color: "#ccc", minHeight: "16px", textAlign: "center" },
       textContent: "Ready"
     });
 
+    // Buttons
     const buttonRow = el("div", { style: { display: "flex", gap: "8px", justifyContent: "center" } });
     const downloadBtn = el("button", { textContent: "Download", style: { padding: "6px 12px", cursor: "pointer" } });
     const stopBtn = el("button", { textContent: "Stop", disabled: true, style: { padding: "6px 12px", cursor: "pointer" } });
@@ -133,17 +122,17 @@ app.registerExtension({
 
     wrap.append(progressTrack, statusText, buttonRow);
 
-    // ================= folder autocomplete logic =================
-    let items = [];
-    let active = -1;
-    let debounceTimer = null;
+    // Folder autocomplete logic
+    let items = [], active = -1;
     const normalizePath = (p) => (p || "").replace(/\\/g, "/").replace(/\/{2,}/g, "/");
     const joinPath = (a, b) => normalizePath((a?.endsWith("/") ? a : a + "/") + (b || ""));
-
     const renderDropdown = () => {
       dropdown.innerHTML = "";
-      if (!items.length) { dropdown.style.display = "none"; active = -1; return; }
-
+      if (!items.length) {
+        dropdown.style.display = "none";
+        active = -1;
+        return;
+      }
       items.forEach((it, idx) => {
         const row = document.createElement("div");
         row.textContent = it.name;
@@ -154,7 +143,6 @@ app.registerExtension({
           background: idx === active ? "#444" : "transparent",
           userSelect: "none"
         });
-
         row.onmouseenter = () => { active = idx; renderDropdown(); };
         const choose = () => {
           const chosen = normalizePath(it.path);
@@ -162,32 +150,24 @@ app.registerExtension({
           node.properties.dest_dir = chosen;
           items = []; active = -1;
           dropdown.style.display = "none";
-          scheduleFetch(); // show next level immediately
+          scheduleFetch();
         };
-        // fire before blur; keep focus
-        row.addEventListener("pointerdown", (e)=>{ e.preventDefault(); e.stopPropagation(); choose(); });
-        row.addEventListener("mousedown",   (e)=>{ e.preventDefault(); e.stopPropagation(); choose(); });
-
-        dropdown.appendChild(row);
+        row.addEventListener("pointerdown", (e) => { e.preventDefault(); e.stopPropagation(); choose(); });
+        row.addEventListener("mousedown",   (e) => { e.preventDefault(); e.stopPropagation(); choose(); });
+        dropdown.append(row);
       });
-
-      placeDropdown();                 // anchor to input
+      placeDropdown();
       dropdown.style.display = "block";
     };
 
-    const scheduleFetch = () => {
-      if (debounceTimer) clearTimeout(debounceTimer);
-      debounceTimer = setTimeout(fetchChildren, 180);
-    };
-
-    async function fetchChildren() {
+    const fetchChildren = async () => {
       const raw = destInput.value.trim();
       if (!raw) { items = []; renderDropdown(); return; }
       const val = normalizePath(raw);
       try {
-        const resp = await api.fetchApi(`/az/listdir?path=${encodeURIComponent(val)}`);
+        const resp = await fetch(`/az/listdir?path=${encodeURIComponent(val)}`);
         const data = await resp.json();
-        if (data?.ok && Array.isArray(data.folders)) {
+        if (data.ok && Array.isArray(data.folders)) {
           items = data.folders.map(f => ({
             name: f.name,
             path: joinPath(data.root || val, f.name)
@@ -195,102 +175,102 @@ app.registerExtension({
         } else {
           items = [];
         }
-        active = items.length ? 0 : -1;
-        renderDropdown();
       } catch {
         items = [];
-        renderDropdown();
       }
-    }
+      active = items.length ? 0 : -1;
+      renderDropdown();
+    };
 
-    // typing
+    const scheduleFetch = () => {
+      if (items) clearTimeout(items);
+      items = setTimeout(fetchChildren, 180);
+    };
+
     destInput.addEventListener("input", () => {
       const raw = destInput.value;
       const prevStart = destInput.selectionStart;
-      const normalized = normalizePath(raw);
-      if (normalized !== raw) {
-        const delta = normalized.length - raw.length;
-        destInput.value = normalized;
-        const pos = Math.max(0, (prevStart||0) + delta);
-        destInput.setSelectionRange(pos, pos);
+      const norm = normalizePath(raw);
+      if (norm !== raw) {
+        const delta = norm.length - raw.length;
+        destInput.value = norm;
+        destInput.setSelectionRange((prevStart || 0) + delta, (prevStart || 0) + delta);
       }
-      node.properties.dest_dir = normalized;
+      node.properties.dest_dir = normalizePath(destInput.value);
       placeDropdown();
       scheduleFetch();
     });
-
     destInput.addEventListener("focus", () => { placeDropdown(); scheduleFetch(); });
-
-    // keyboard nav
     destInput.addEventListener("keydown", (e) => {
       if (dropdown.style.display !== "block" || !items.length) return;
-      if (e.key === "ArrowDown") { e.preventDefault(); active = (active+1) % items.length; renderDropdown(); }
-      else if (e.key === "ArrowUp") { e.preventDefault(); active = (active-1+items.length) % items.length; renderDropdown(); }
-      else if (e.key === "Enter" && active >= 0) {
+      if (e.key === "ArrowDown") { 
         e.preventDefault();
-        const it = items[active];
-        destInput.value = normalizePath(it.path);
+        active = (active + 1) % items.length;
+        renderDropdown();
+      } else if (e.key === "ArrowUp") {
+        e.preventDefault();
+        active = (active - 1 + items.length) % items.length;
+        renderDropdown();
+      } else if (e.key === "Enter" && active >= 0) {
+        e.preventDefault();
+        destInput.value = normalizePath(items[active].path);
         node.properties.dest_dir = destInput.value;
-        items = []; active = -1; dropdown.style.display = "none";
+        items = []; active = -1;
+        dropdown.style.display = "none";
         scheduleFetch();
       } else if (e.key === "Escape") {
-        dropdown.style.display = "none"; items=[]; active=-1;
+        dropdown.style.display = "none";
+        items = [];
+        active = -1;
       }
     });
+    destInput.addEventListener("blur", () => {
+      setTimeout(() => { dropdown.style.display = "none"; }, 120);
+    });
 
-     destInput.addEventListener("blur", ()=>{ setTimeout(()=>{ dropdown.style.display="none"; }, 120); });
-
-    // Add DOM widget with fixed min height (unchanged)
-    const MIN_W = 460;
-    const MIN_H = 230;
+    // Add DOM widget
+    const MIN_W = 460, MIN_H = 230;
     node.addDOMWidget("hf_downloader", "dom", wrap, {
       serialize: false,
       hideOnZoom: false,
       getMinHeight: () => MIN_H
     });
 
-    // ====== Size fixes (unchanged except original logic) ======
-    const MAX_H = 300;
+    // Enforce minimum size
     node.size = [
-      Math.max(node.size?.[0] || MIN_W, MIN_W),
-      Math.max(node.size?.[1] || MIN_H, MIN_H),
+      Math.max(node.size[0] || MIN_W, MIN_W),
+      Math.max(node.size[1] || MIN_H, MIN_H),
     ];
     const prevOnResize = node.onResize;
     node.onResize = function() {
       this.size[0] = Math.max(this.size[0], MIN_W);
-      this.size[1] = Math.min(Math.max(this.size[1], MIN_H), MAX_H);
+      this.size[1] = Math.min(Math.max(this.size[1], MIN_H), 300);
       if (prevOnResize) prevOnResize.apply(this, arguments);
     };
 
-    // ====== State ======
+    // Download state
     node.gid = null;
     node._pollInterval = null;
     node._pollCount = 0;
 
     function showBar(on) {
-      progressTrack.style.display = on ? "block" : "none"; // force block
+      progressTrack.style.display = on ? "block" : "none";
     }
     function setButtons(running) {
       downloadBtn.disabled = !!running;
       stopBtn.disabled = !running;
-    }
-    function stopPolling() {
-      if (node._pollInterval) {
-        clearInterval(node._pollInterval);
-        node._pollInterval = null;
-      }
     }
     function resetToIdle(msg = "Ready") {
       setButtons(false);
       showBar(false);
       statusText.textContent = msg;
       node.gid = null;
-      stopPolling();
+      clearInterval(node._pollInterval);
+      node._pollInterval = null;
       node._pollCount = 0;
     }
-
     function startPolling() {
-      stopPolling();
+      clearInterval(node._pollInterval);
       node._pollCount = 0;
       node._pollInterval = setInterval(async () => {
         if (!node.gid || node._pollCount > 200) {
@@ -318,7 +298,7 @@ app.registerExtension({
             showBar(false);
             setButtons(false);
             node.gid = null;
-            stopPolling();
+            clearInterval(node._pollInterval);
             return;
           }
           if (state === "stopped") {
@@ -338,12 +318,12 @@ app.registerExtension({
       }, 1000);
     }
 
-    // ====== Buttons ======
+    // Download button click
     downloadBtn.onclick = async () => {
       const repo_id = repoInput.value.trim();
       const filename = fileInput.value.trim();
       const dest_dir = destInput.value.trim();
-      const token_input = tokenInput.value.trim();
+      const token_val = tokenInput.value.trim();
       if (!repo_id || !filename || !dest_dir) {
         statusText.textContent = "Please fill all fields";
         showBar(false);
@@ -356,7 +336,7 @@ app.registerExtension({
         const res = await fetch("/hf/start", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ repo_id, filename, dest_dir, token_input, })
+          body: JSON.stringify({ repo_id, filename, dest_dir, token_input: token_val })
         });
         if (!res.ok) throw new Error(`Start ${res.status}`);
         const out = await res.json();
@@ -373,6 +353,7 @@ app.registerExtension({
       }
     };
 
+    // Stop button click
     stopBtn.onclick = async () => {
       if (!node.gid) {
         resetToIdle("Stopped.");
@@ -390,22 +371,15 @@ app.registerExtension({
       }
     };
 
-    // ====== Init ======
+    // Initialize UI state
     node.size[0] = Math.max(node.size[0], MIN_W);
     resetToIdle("Ready");
 
-    // Cleanup
+    // Cleanup on removal
     const originalOnRemoved = node.onRemoved;
     node.onRemoved = function () {
-      // existing cleanup
-      stopPolling();
-      if (wrap && wrap.parentNode) wrap.remove();
-
-      // new: remove listeners and the body overlay
-      window.removeEventListener("scroll", onScroll, true);
-      window.removeEventListener("resize", onResize);
-      try { dropdown.remove(); } catch {}
-
+      clearInterval(node._pollInterval);
+      dropdown.remove();
       if (originalOnRemoved) originalOnRemoved.call(this);
     };
   }
