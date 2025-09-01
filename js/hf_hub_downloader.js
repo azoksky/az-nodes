@@ -29,6 +29,17 @@ function injectCSSOnce() {
   document.head.appendChild(style);
 }
 
+function fmtDuration(sec) {
+  if (sec == null || !isFinite(sec)) return "--";
+  sec = Math.max(0, sec | 0);
+  const h = Math.floor(sec / 3600);
+  const m = Math.floor((sec % 3600) / 60);
+  const s = sec % 60;
+  if (h) return h + "h " + m + "m";
+  if (m) return m + "m " + s + "s";
+  return s + "s";
+}
+
 app.registerExtension({
   name: "aznodes.hf_hub_downloader",
   beforeRegisterNodeDef(nodeType, nodeData) {
@@ -51,8 +62,9 @@ app.registerExtension({
       this.gid = null;
       this._pollTimer = null;
       this._autoToken = (this.properties.token || "").trim() === "";
+      this._startTS = null;
+      this._elapsedTimer = null;
 
-      // Row height helpers to ensure enough space
       const rowH = 40;
       const smallRowH = 24;
 
@@ -90,7 +102,7 @@ app.registerExtension({
         this.properties.filename = fileInput.value;
       });
 
-      // Token input + hint (DOM row)
+      // Token input + hint
       const tokenRow = document.createElement("div");
       tokenRow.className = "az-row az-flex";
 
@@ -324,7 +336,6 @@ app.registerExtension({
       const bar = document.createElement("div");
       bar.className = "bar";
       progress.appendChild(bar);
-
       const progressWidget = this.addDOMWidget("progress", "", progress);
       progressWidget.computeSize = () => [this.size[0] - 20, smallRowH];
 
@@ -335,14 +346,40 @@ app.registerExtension({
       statusEl.style.width = "100%";
       statusEl.style.textAlign = "center";
       statusEl.textContent = "Ready";
-
       const statusWidget = this.addDOMWidget("status", "", statusEl);
       statusWidget.computeSize = () => [this.size[0] - 20, smallRowH];
+
+      // Elapsed row
+      const timeEl = document.createElement("div");
+      timeEl.style.color = "#999";
+      timeEl.style.fontSize = "12px";
+      timeEl.style.width = "100%";
+      timeEl.style.textAlign = "center";
+      timeEl.textContent = "Elapsed: 0s";
+      const timeWidget = this.addDOMWidget("elapsed", "", timeEl);
+      timeWidget.computeSize = () => [this.size[0] - 20, smallRowH];
 
       const setDownloading = (on) => {
         downloadBtn.disabled = on;
         stopBtn.disabled = !on;
         progress.style.display = on ? "block" : "none";
+      };
+
+      const startElapsed = () => {
+        this._startTS = Date.now();
+        if (this._elapsedTimer) clearInterval(this._elapsedTimer);
+        const tick = () => {
+          if (!this._startTS) return;
+          const sec = Math.max(0, ((Date.now() - this._startTS) / 1000) | 0);
+          timeEl.textContent = "Elapsed: " + fmtDuration(sec);
+        };
+        tick();
+        this._elapsedTimer = setInterval(tick, 1000);
+      };
+
+      const stopElapsed = () => {
+        if (this._elapsedTimer) clearInterval(this._elapsedTimer);
+        this._elapsedTimer = null;
       };
 
       const startPoll = () => {
@@ -355,12 +392,14 @@ app.registerExtension({
               statusEl.textContent = "Error: " + (s.error || "Unknown");
               this.gid = null;
               setDownloading(false);
+              stopElapsed();
               return;
             }
             statusEl.textContent = s.msg || s.state || "running";
             if (s.state === "done" || s.state === "error" || s.state === "stopped") {
               this.gid = null;
               setDownloading(false);
+              stopElapsed();
               return;
             }
             this._pollTimer = setTimeout(poll, 900);
@@ -384,6 +423,7 @@ app.registerExtension({
         }
         statusEl.textContent = "Starting...";
         setDownloading(true);
+        startElapsed();
         try {
           const res = await api.fetchApi("/hf/start", {
             method: "POST",
@@ -394,6 +434,7 @@ app.registerExtension({
           if (!res.ok || !out.ok) {
             statusEl.textContent = "Error: " + (out.error || res.status);
             setDownloading(false);
+            stopElapsed();
             return;
           }
           this.gid = out.gid;
@@ -402,6 +443,7 @@ app.registerExtension({
         } catch (e) {
           statusEl.textContent = "Error starting: " + e.message;
           setDownloading(false);
+          stopElapsed();
         }
       });
 
@@ -409,6 +451,7 @@ app.registerExtension({
         if (!this.gid) {
           setDownloading(false);
           statusEl.textContent = "Stopped.";
+          stopElapsed();
           return;
         }
         try {
@@ -422,6 +465,7 @@ app.registerExtension({
           statusEl.textContent = "Error stopping: " + e.message;
         } finally {
           setDownloading(false);
+          stopElapsed();
           this.gid = null;
         }
       });
@@ -436,14 +480,15 @@ app.registerExtension({
       const oldRemoved = this.onRemoved;
       this.onRemoved = function () {
         if (this._pollTimer) clearTimeout(this._pollTimer);
+        stopElapsed();
         try { if (dropdown && dropdown.parentNode) dropdown.parentNode.removeChild(dropdown); } catch (e) { }
         window.removeEventListener("scroll", onScroll, true);
         window.removeEventListener("resize", onResize);
         if (oldRemoved) oldRemoved.apply(this, arguments);
       };
 
-      // Good default size (DOM rows control actual height)
-      this.size = [520, 280];
+      // Good default size
+      this.size = [520, 320];
 
       return r;
     };
