@@ -412,7 +412,7 @@ app.registerExtension({
       });
 
       // Canvas size & drawing
-      this.size = [480, 360];
+      this.size = [480, 330];
       this.onDrawForeground = (ctx) => {
         const pad = 10;
         const w = this.size[0] - pad * 2;
@@ -489,4 +489,5 @@ app.registerExtension({
     };
   },
 });
+
 
