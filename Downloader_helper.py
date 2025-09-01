@@ -65,13 +65,13 @@ def _ensure_aria2_daemon():
 # ========= Filename helpers =========
 _SANITIZE_RE = re.compile(r'[\\/:*?"<>|\x00-\x1F]')
 
-def _sanitize_filename(name: str) -> str:
+def _sanitize_filename(name):
     return _SANITIZE_RE.sub("_", name).strip()
 
-def _safe_expand(path_str: str) -> str:
+def _safe_expand(path_str):
     return os.path.abspath(os.path.expanduser(path_str or ""))
 
-def _parse_cd_filename(cd: str):
+def _parse_cd_filename(cd):
     if not cd:
         return None
     # RFC 5987: filename*=UTF-8''percent-encoded
@@ -95,14 +95,14 @@ def _parse_cd_filename(cd: str):
         return n or None
     return None
 
-def _origin_from_url(u: str) -> str:
+def _origin_from_url(u):
     try:
         p = urlparse(u)
         return urlunparse((p.scheme, p.netloc, "/", "", "", ""))
     except Exception:
         return ""
 
-def _extract_query_filename(u: str):
+def _extract_query_filename(u):
     try:
         q = urllib.parse.parse_qs(urlparse(u).query)
         for key in ("filename", "file", "name", "response-content-disposition"):
@@ -119,7 +119,7 @@ def _extract_query_filename(u: str):
         pass
     return None
 
-def _head_follow(url: str, max_redirects: int = 5, token: str | None = None):
+def _head_follow(url, max_redirects=5, token=None):
     opener = urllib.request.build_opener()
     headers = {"Authorization": f"Bearer {token}"} if token else {}
     req = urllib.request.Request(url, method="HEAD", headers=headers)
@@ -131,7 +131,7 @@ def _head_follow(url: str, max_redirects: int = 5, token: str | None = None):
             return opener.open(req_get, timeout=10)
         raise
 
-def _smart_guess_filename(url: str, token: str | None = None):
+def _smart_guess_filename(url, token=None):
     # 1) Query param hints
     qn = _extract_query_filename(url)
     if qn:
@@ -321,7 +321,6 @@ async def tokens(request):
 
 @PromptServer.instance.routes.get("/tokens/resolve")
 async def tokens_resolve(request):
-    """Return the appropriate token for a given URL, so the UI can auto-fill."""
     url = (request.query.get("url") or "").lower()
     token = ""
     kind = ""
