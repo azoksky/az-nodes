@@ -74,7 +74,6 @@ def _safe_expand(path_str):
 def _parse_cd_filename(cd):
     if not cd:
         return None
-    # RFC 5987: filename*=UTF-8''percent-encoded
     m = re.search(r"filename\*\s*=\s*[^'\";]+''([^;]+)", cd, flags=re.IGNORECASE)
     if m:
         try:
@@ -83,12 +82,10 @@ def _parse_cd_filename(cd):
             return n or None
         except Exception:
             pass
-    # filename="name"
     m = re.search(r'filename\s*=\s*"([^"]+)"', cd, flags=re.IGNORECASE)
     if m:
         n = _sanitize_filename(os.path.basename(m.group(1)))
         return n or None
-    # filename=name
     m = re.search(r'filename\s*=\s*([^;]+)', cd, flags=re.IGNORECASE)
     if m:
         n = _sanitize_filename(os.path.basename(m.group(1).strip()))
@@ -132,11 +129,9 @@ def _head_follow(url, max_redirects=5, token=None):
         raise
 
 def _smart_guess_filename(url, token=None):
-    # 1) Query param hints
     qn = _extract_query_filename(url)
     if qn:
         return (qn, True)
-    # 2) HEAD/GET headers
     try:
         resp = _head_follow(url, token=token)
         cd = resp.headers.get("Content-Disposition") or resp.headers.get("content-disposition")
@@ -145,7 +140,6 @@ def _smart_guess_filename(url, token=None):
             return (n, True)
     except Exception:
         pass
-    # 3) URL path (not confident)
     try:
         path_name = os.path.basename(urlparse(url).path)
         path_name = _sanitize_filename(path_name)
@@ -185,9 +179,9 @@ async def aria2_start(request):
     try:
         os.makedirs(dest_dir, exist_ok=True)
     except Exception as e:
-        return web.json_response({"error": f"Cannot access destination: {e}"}, status=400)
+        return web.json_response({"error": "Cannot access destination: {}".format(e)}, status=400)
     if not os.path.isdir(dest_dir) or not os.access(dest_dir, os.W_OK):
-        return web.json_response({"error": f"Destination not writable: {dest_dir}"}, status=400)
+        return web.json_response({"error": "Destination not writable: {}".format(dest_dir)}, status=400)
 
     try:
         _ensure_aria2_daemon()
@@ -212,7 +206,7 @@ async def aria2_start(request):
         "max-tries": "5",
     }
     if token:
-        opts["header"].append(f"Authorization: Bearer {token}")
+        opts["header"].append("Authorization: Bearer {}".format(token))
     origin = _origin_from_url(url)
     if origin:
         opts["referer"] = origin
@@ -231,7 +225,7 @@ async def aria2_start(request):
             "confident": bool(confident),
         })
     except Exception as e:
-        return web.json_response({"error": f"aria2c RPC error: {e}"}, status=500)
+        return web.json_response({"error": "aria2c RPC error: {}".format(e)}, status=500)
 
 @PromptServer.instance.routes.get("/aria2/status")
 async def aria2_status(request):
@@ -242,7 +236,7 @@ async def aria2_status(request):
         res = _aria2_rpc("tellStatus", [gid, ["status", "totalLength", "completedLength", "downloadSpeed", "errorMessage", "files", "dir"]])
         st = res.get("result", {})
     except Exception as e:
-        return web.json_response({"error": f"aria2c RPC error: {e}"}, status=500)
+        return web.json_response({"error": "aria2c RPC error: {}".format(e)}, status=500)
     status = st.get("status", "unknown")
     total = int(st.get("totalLength", "0") or "0")
     done = int(st.get("completedLength", "0") or "0")
@@ -284,7 +278,7 @@ async def aria2_stop(request):
         _aria2_rpc("remove", [gid])
         return web.json_response({"ok": True})
     except Exception as e:
-        return web.json_response({"error": f"aria2c RPC error: {e}"}, status=500)
+        return web.json_response({"error": "aria2c RPC error: {}".format(e)}, status=500)
 
 @PromptServer.instance.routes.get("/az/listdir")
 async def az_listdir(request):
@@ -323,16 +317,13 @@ async def tokens(request):
 async def tokens_resolve(request):
     url = (request.query.get("url") or "").lower()
     token = ""
-    kind = ""
     if ("huggingface.co" in url) or ("cdn-lfs.huggingface.co" in url):
         token = HF_TOKEN
-        kind = "hf"
     elif "civitai.com" in url:
         token = CIVIT_TOKEN
-        kind = "civit"
-    return web.json_response({"token": token or "", "kind": kind})
+    return web.json_response({"token": token or ""})
 
-# ========= UI-only node =========
+# ========= UI-only node shell =========
 class Aria2Downloader:
     @classmethod
     def INPUT_TYPES(cls):
