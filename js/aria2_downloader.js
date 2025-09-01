@@ -99,22 +99,15 @@ app.registerExtension({
           const bottom = top + el.offsetHeight;
           const viewTop = dropdown.scrollTop;
           const viewBottom = viewTop + dropdown.clientHeight;
-          if (top < viewTop) {
-            dropdown.scrollTop = top;
-          } else if (bottom > viewBottom) {
-            dropdown.scrollTop = bottom - dropdown.clientHeight;
-          }
+          if (top < viewTop) dropdown.scrollTop = top;
+          else if (bottom > viewBottom) dropdown.scrollTop = bottom - dropdown.clientHeight;
         }
       };
 
       const renderDropdown = () => {
         const prevScrollTop = dropdown.scrollTop;
         dropdown.innerHTML = "";
-        if (!items.length) {
-          dropdown.style.display = "none";
-          active = -1;
-          return;
-        }
+        if (!items.length) { dropdown.style.display = "none"; active = -1; return; }
         items.forEach((it, idx) => {
           const row = document.createElement("div");
           row.textContent = it.name;
@@ -126,20 +119,15 @@ app.registerExtension({
             userSelect: "none"
           });
           row.addEventListener("pointerdown", (e) => {
-            e.preventDefault();
-            e.stopPropagation();
+            e.preventDefault(); e.stopPropagation();
             const chosen = it.path.replace(/\\/g, "/").replace(/\/{2,}/g, "/");
             destInput.value = chosen;
             this.properties.dest_dir = chosen;
-            items = [];
-            active = -1;
+            items = []; active = -1;
             dropdown.style.display = "none";
             scheduleFetch();
           });
-          row.onmouseenter = () => {
-            active = idx;
-            renderDropdown();
-          };
+          row.onmouseenter = () => { active = idx; renderDropdown(); };
           dropdown.appendChild(row);
         });
         placeDropdown();
@@ -155,11 +143,7 @@ app.registerExtension({
 
       const fetchChildren = async () => {
         const raw = destInput.value.trim();
-        if (!raw) {
-          items = [];
-          renderDropdown();
-          return;
-        }
+        if (!raw) { items = []; renderDropdown(); return; }
         const val = raw.replace(/\\/g, "/").replace(/\/{2,}/g, "/");
         try {
           const resp = await api.fetchApi("/az/listdir?path=" + encodeURIComponent(val));
@@ -169,7 +153,7 @@ app.registerExtension({
           } else {
             items = [];
           }
-        } catch (e) {
+        } catch {
           items = [];
         }
         active = items.length ? 0 : -1;
@@ -198,37 +182,23 @@ app.registerExtension({
 
       destInput.addEventListener("keydown", (e) => {
         if (dropdown.style.display !== "block" || !items.length) return;
-        if (e.key === "ArrowDown") {
-          e.preventDefault();
-          active = (active + 1) % items.length;
-          renderDropdown();
-          ensureActiveVisible();
-        } else if (e.key === "ArrowUp") {
-          e.preventDefault();
-          active = (active - 1 + items.length) % items.length;
-          renderDropdown();
-          ensureActiveVisible();
-        } else if (e.key === "Enter" && active >= 0) {
+        if (e.key === "ArrowDown") { e.preventDefault(); active = (active + 1) % items.length; renderDropdown(); ensureActiveVisible(); }
+        else if (e.key === "ArrowUp")   { e.preventDefault(); active = (active - 1 + items.length) % items.length; renderDropdown(); ensureActiveVisible(); }
+        else if (e.key === "Enter" && active >= 0) {
           e.preventDefault();
           const it = items[active];
           const chosen = it.path.replace(/\\/g, "/").replace(/\/{2,}/g, "/");
           destInput.value = chosen;
           this.properties.dest_dir = chosen;
-          items = [];
-          active = -1;
-          dropdown.style.display = "none";
+          items = []; active = -1; dropdown.style.display = "none";
           scheduleFetch();
         } else if (e.key === "Escape") {
-          dropdown.style.display = "none";
-          items = [];
-          active = -1;
+          dropdown.style.display = "none"; items = []; active = -1;
         }
       });
 
       destInput.addEventListener("blur", () => {
-        setTimeout(() => {
-          dropdown.style.display = "none";
-        }, 120);
+        setTimeout(() => { dropdown.style.display = "none"; }, 120);
       });
 
       // --- URL input ---
@@ -300,9 +270,7 @@ app.registerExtension({
             this.properties.token = tok;
             this._autoToken = true;
           }
-        } catch (e) {
-          // ignore
-        }
+        } catch { }
       };
 
       const scheduleResolveToken = () => {
@@ -333,20 +301,22 @@ app.registerExtension({
       this._eta = null;
       this._filename = "";
       this._filepath = "";
+      // Elapsed time tracking
+      this._startTS = null;
+      this._elapsedSec = 0;
 
       // --- Actions ---
       this.addWidget("button", "Download", "Start", async () => {
         if (this.gid) return;
         const url = (urlInput.value || "").trim();
         const dest = (this.properties.dest_dir || "").trim();
-        if (!url) {
-          this._status = "Missing URL";
-          this.setDirtyCanvas(true);
-          return;
-        }
+        if (!url) { this._status = "Missing URL"; this.setDirtyCanvas(true); return; }
         this._status = "Starting...";
         this._progress = 0; this._speed = 0; this._eta = null;
         this._filename = ""; this._filepath = "";
+        // Start elapsed timer
+        this._startTS = Date.now();
+        this._elapsedSec = 0;
         this.setDirtyCanvas(true);
 
         try {
@@ -358,6 +328,7 @@ app.registerExtension({
           const data = await resp.json();
           if (!resp.ok || data.error) {
             this._status = "Error: " + (data.error || resp.status);
+            this.gid = null;
             this.setDirtyCanvas(true);
             return;
           }
@@ -382,6 +353,12 @@ app.registerExtension({
               this._eta = s.eta || null;
               if (s.filename) this._filename = s.filename;
               if (s.filepath) this._filepath = s.filepath;
+
+              // Update elapsed
+              if (this._startTS) {
+                this._elapsedSec = Math.max(0, ((Date.now() - this._startTS) / 1000) | 0);
+              }
+
               this.setDirtyCanvas(true);
 
               if (["complete", "error", "removed"].includes(this._status)) {
@@ -389,7 +366,7 @@ app.registerExtension({
                 return;
               }
               this._pollTimer = setTimeout(poll, 500);
-            } catch (e) {
+            } catch {
               this._pollTimer = setTimeout(poll, 500);
             }
           };
@@ -408,11 +385,11 @@ app.registerExtension({
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ gid: this.gid })
           });
-        } catch (e) {}
+        } catch {}
       });
 
       // Canvas size & drawing
-      this.size = [480, 330];
+      this.size = [480, 300];
       this.onDrawForeground = (ctx) => {
         const pad = 10;
         const w = this.size[0] - pad * 2;
@@ -422,7 +399,10 @@ app.registerExtension({
         ctx.textAlign = "left";
         ctx.textBaseline = "bottom";
         ctx.fillStyle = "#bbb";
-        const meta = "Status: " + this._status + " • Speed: " + fmtBytes(this._speed) + "/s • ETA: " + fmtETA(this._eta);
+        const meta = "Status: " + this._status
+          + " • Speed: " + fmtBytes(this._speed) + "/s"
+          + " • ETA: " + fmtETA(this._eta)
+          + " • Elapsed: " + fmtETA(this._elapsedSec);
         ctx.fillText(meta, pad, yBar - 26);
         if (this._filename || this._filepath) {
           const show = this._filepath || this._filename;
@@ -489,5 +469,3 @@ app.registerExtension({
     };
   },
 });
-
-
