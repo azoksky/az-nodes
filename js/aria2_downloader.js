@@ -182,12 +182,7 @@ app.registerExtension({
         }
       });
 
-      const hideDropdownSoon = () => { setTimeout(()=>{ dropdown.style.display="none"; }, 120); };
-      destInput.addEventListener("blur", hideDropdownSoon);
-      const onScroll = () => hideDropdownSoon();
-      const onResize = () => hideDropdownSoon();
-      window.addEventListener("scroll", onScroll, true);
-      window.addEventListener("resize", onResize);
+      destInput.addEventListener("blur", ()=>{ setTimeout(()=>{ dropdown.style.display="none"; }, 120); });
 
       // --- Inputs (URL + button) ---
       //this.addWidget("text", "URL", this.properties.url, v => this.properties.url = v ?? "");
@@ -385,6 +380,7 @@ app.registerExtension({
     };
   },
 });
+
 
 
 
