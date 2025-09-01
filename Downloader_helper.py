@@ -16,6 +16,7 @@ from server import PromptServer
 # ========= Config =========
 ARIA2_SECRET = os.environ.get("COMFY_ARIA2_SECRET", "comfyui_aria2_secret")
 HF_TOKEN = os.environ.get("HF_READ_TOKEN", "")
+CIVIT_TOKEN = os.environ.get("CIVIT_TOKEN", "")
 ARIA2_RPC_URL = os.environ.get("COMFY_ARIA2_RPC", "http://127.0.0.1:6800/jsonrpc")
 ARIA2_BIN = shutil.which("aria2c") or "aria2c"
 RPC_START_ARGS = [
@@ -27,8 +28,6 @@ RPC_START_ARGS = [
     "--console-log-level=error",
     "--disable-ipv6=true",
 ]
-# if HF_TOKEN:
-#     RPC_START_ARGS.append(f'--header=Authorization: Bearer {HF_TOKEN}')
 
 # ========= RPC helper =========
 def _aria2_rpc(method, params=None):
@@ -61,9 +60,9 @@ def _ensure_aria2_daemon():
             return
         except Exception:
             time.sleep(0.15)
-    _aria2_rpc("getVersion")  # raise if still not up
+    _aria2_rpc("getVersion")
 
-# ========= Filename helpers =========
+# ========= Helpers =========
 _SANITIZE_RE = re.compile(r'[\\/:*?"<>|\x00-\x1F]')
 
 def _sanitize_filename(name: str) -> str:
@@ -75,25 +74,19 @@ def _safe_expand(path_str: str) -> str:
 def _parse_cd_filename(cd: str) -> str | None:
     if not cd:
         return None
-    # RFC 5987: filename*=UTF-8''percent-encoded
     m = re.search(r'filename\*\s*=\s*[^\'";]+\'' + r"'" + r'([^;]+)', cd, flags=re.IGNORECASE)
     if m:
         try:
             decoded = urllib.parse.unquote(m.group(1))
-            n = _sanitize_filename(os.path.basename(decoded))
-            return n or None
+            return _sanitize_filename(os.path.basename(decoded)) or None
         except Exception:
             pass
-    # filename="name"
     m = re.search(r'filename\s*=\s*"([^"]+)"', cd, flags=re.IGNORECASE)
     if m:
-        n = _sanitize_filename(os.path.basename(m.group(1)))
-        return n or None
-    # filename=name
+        return _sanitize_filename(os.path.basename(m.group(1)))
     m = re.search(r'filename\s*=\s*([^;]+)', cd, flags=re.IGNORECASE)
     if m:
-        n = _sanitize_filename(os.path.basename(m.group(1).strip()))
-        return n or None
+        return _sanitize_filename(os.path.basename(m.group(1).strip()))
     return None
 
 def _origin_from_url(u: str) -> str:
@@ -104,53 +97,36 @@ def _origin_from_url(u: str) -> str:
         return ""
 
 def _extract_query_filename(u: str) -> str | None:
-    """Common patterns used by CDNs: ?filename=, ?response-content-disposition=attachment;filename=..."""
     try:
         q = urllib.parse.parse_qs(urlparse(u).query)
-        # direct filename param
         for key in ("filename", "file", "name", "response-content-disposition"):
             if key in q and q[key]:
                 candidate = q[key][0]
-                # if response-content-disposition is passed through, parse it
                 if key == "response-content-disposition":
                     n = _parse_cd_filename(candidate)
                     if n:
                         return n
-                n = _sanitize_filename(os.path.basename(candidate))
-                if n:
-                    return n
+                return _sanitize_filename(os.path.basename(candidate))
     except Exception:
         pass
     return None
-def _auth_header():
-    return {"Authorization": f"Bearer {HF_TOKEN}"} if HF_TOKEN else {}
-    
-def _head_follow(url: str, max_redirects: int = 5, token: str | None = None):
-    """HEAD first; if disallowed, try GET without reading body."""
+
+def _head_follow(url: str, token: str | None = None):
     opener = urllib.request.build_opener()
     headers = {"Authorization": f"Bearer {token}"} if token else {}
-    # HEAD
     req = urllib.request.Request(url, method="HEAD", headers=headers)
     try:
         return opener.open(req, timeout=10)
     except urllib.error.HTTPError as e:
         if e.code in (403, 405):
-            # fallback GET (still needs auth if private)
             req_get = urllib.request.Request(url, method="GET", headers=headers)
             return opener.open(req_get, timeout=10)
         raise
 
 def _smart_guess_filename(url: str, token: str | None = None) -> tuple[str | None, bool]:
-    """
-    Returns (name, confident).
-    confident=True only when derived from Content-Disposition or explicit query filename.
-    """
-    # 1) Query param hints
     qn = _extract_query_filename(url)
     if qn:
         return (qn, True)
-
-    # 2) HEAD/GET headers
     try:
         resp = _head_follow(url, token=token)
         cd = resp.headers.get("Content-Disposition") or resp.headers.get("content-disposition")
@@ -159,16 +135,11 @@ def _smart_guess_filename(url: str, token: str | None = None) -> tuple[str | Non
             return (n, True)
     except Exception:
         pass
-
-    # 3) URL path (not confident; let aria2 decide if possible)
     try:
         path_name = os.path.basename(urlparse(url).path)
-        path_name = _sanitize_filename(path_name)
-        if path_name:
-            return (path_name, False)
+        return (_sanitize_filename(path_name), False) if path_name else (None, False)
     except Exception:
-        pass
-    return (None, False)
+        return (None, False)
 
 def _eta(total_len, done_len, speed):
     try:
@@ -178,23 +149,30 @@ def _eta(total_len, done_len, speed):
     except Exception:
         return None
 
+def _resolve_token(url: str, body_token: str | None) -> str:
+    if body_token:
+        return body_token
+    if "huggingface.co" in url and HF_TOKEN:
+        return HF_TOKEN
+    if "civitai.com" in url and CIVIT_TOKEN:
+        return CIVIT_TOKEN
+    return ""
+
 # ========= API =========
 @PromptServer.instance.routes.post("/aria2/start")
 async def aria2_start(request):
     body = await request.json()
     url = (body.get("url") or "").strip()
     dest_dir = _safe_expand(body.get("dest_dir") or os.getcwd())
-    token = (body.get("token") or "").strip()
-    
+    user_token = (body.get("token") or "").strip()
+    token = _resolve_token(url, user_token)
 
     if not url:
         return web.json_response({"error": "URL is required."}, status=400)
-
     try:
         os.makedirs(dest_dir, exist_ok=True)
     except Exception as e:
         return web.json_response({"error": f"Cannot access destination: {e}"}, status=400)
-
     if not os.path.isdir(dest_dir) or not os.access(dest_dir, os.W_OK):
         return web.json_response({"error": f"Destination not writable: {dest_dir}"}, status=400)
 
@@ -204,9 +182,6 @@ async def aria2_start(request):
         return web.json_response({"error": str(e)}, status=500)
 
     guessed_name, confident = _smart_guess_filename(url, token=token)
-
-    # Map CLI options and add browser-like headers to coax proper CD filename
-    # NOTE: we set "out" ONLY if confident; otherwise we let aria2 use server-provided name.
     opts = {
         "continue": "true",
         "max-connection-per-server": "16",
@@ -218,18 +193,15 @@ async def aria2_start(request):
         "header": [
             "Accept: */*",
             "Accept-Language: en-US,en;q=0.9",
-            "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-            "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+            "User-Agent: Mozilla/5.0",
         ],
         "max-tries": "5",
     }
     if token:
         opts["header"].append(f"Authorization: Bearer {token}")
-    # Add Referer to mimic browser navigation when possible
     origin = _origin_from_url(url)
     if origin:
         opts["referer"] = origin
-
     if confident and guessed_name:
         opts["out"] = guessed_name
 
@@ -241,7 +213,7 @@ async def aria2_start(request):
         return web.json_response({
             "gid": gid,
             "dest_dir": dest_dir,
-            "guessed_out": opts.get("out", "") or "",
+            "guessed_out": opts.get("out", ""),
             "confident": bool(confident),
         })
     except Exception as e:
@@ -252,7 +224,6 @@ async def aria2_status(request):
     gid = request.query.get("gid", "")
     if not gid:
         return web.json_response({"error": "gid is required."}, status=400)
-
     try:
         res = _aria2_rpc("tellStatus", [gid, [
             "status", "totalLength", "completedLength", "downloadSpeed",
@@ -312,17 +283,9 @@ async def aria2_stop(request):
 class Aria2Downloader:
     @classmethod
     def INPUT_TYPES(cls):
-        return {"required": {}}  # no backend auto-widgets
-
+        return {"required": {}}
     RETURN_TYPES = ()
     FUNCTION = "noop"
     CATEGORY = "AZ_Nodes"
-
     def noop(self):
         return ()
-
-
-
-
-
-
