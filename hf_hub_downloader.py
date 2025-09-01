@@ -1,20 +1,19 @@
+# -*- coding: utf-8 -*-
 import os
 import json
-import asyncio
 import threading
 from uuid import uuid4
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 
 from aiohttp import web
 from server import PromptServer
 from huggingface_hub import hf_hub_download
 
-# Environment tokens
+# Env tokens
 HF_TOKEN = os.environ.get("HF_READ_TOKEN", "")
-CIVIT_TOKEN = os.environ.get("CIVIT_TOKEN", "")
 
-# ============ minimal job store (no progress math) ============
-_downloads: Dict[str, Dict[str, Any]] = {}  # gid -> {state, msg, filepath, thread, cancel}
+# Minimal in-memory job store
+_downloads: Dict[str, Dict[str, Any]] = {}  # gid -> {state, msg, filepath, thread}
 
 def _set(gid: str, **kw):
     _downloads.setdefault(gid, {})
@@ -23,19 +22,18 @@ def _set(gid: str, **kw):
 def _get(gid: str, key: str, default=None):
     return _downloads.get(gid, {}).get(key, default)
 
-# ============ worker ============
-def _worker(gid: str, repo_id: str, filename: str, dest_dir: str, token: str | None):
+def _worker(gid: str, repo_id: str, filename: str, dest_dir: str, token: Optional[str]):
     try:
-        _set(gid, state="running", msg="Download started…", filepath=None)
+        _set(gid, state="running", msg="Download started...", filepath=None)
         local_path = hf_hub_download(
             repo_id=repo_id,
             filename=filename,
             local_dir=dest_dir,
-            token=token
+            token=token or None
         )
         _set(gid, state="done", msg="File download complete.", filepath=local_path)
     except Exception as e:
-        _set(gid, state="error", msg=f"{type(e).__name__}: {e}")
+        _set(gid, state="error", msg="{}: {}".format(type(e).__name__, e))
 
 # ============ routes ============
 async def start_download(request: web.Request):
@@ -49,22 +47,20 @@ async def start_download(request: web.Request):
         if not repo_id or not filename or not dest_dir:
             return web.json_response({"ok": False, "error": "repo_id, filename, dest_dir are required"}, status=400)
 
-        os.makedirs(dest_dir, exist_ok=True)
+        try:
+            os.makedirs(dest_dir, exist_ok=True)
+        except Exception as e:
+            return web.json_response({"ok": False, "error": "Cannot create destination: {}".format(e)}, status=400)
 
-        # Determine token if not provided
+        # If no token provided, default to HF token from env
         if not token:
-            lower = repo_id.lower()
-            if "huggingface.co" in lower:
-                token = HF_TOKEN
-            elif "civitai.com" in lower:
-                token = CIVIT_TOKEN
+            token = HF_TOKEN
 
         gid = data.get("gid") or uuid4().hex
         _downloads[gid] = {
             "state": "starting",
-            "msg": "Starting…",
+            "msg": "Starting...",
             "filepath": None,
-            "cancel": False,
             "thread": None,
         }
 
@@ -73,15 +69,11 @@ async def start_download(request: web.Request):
         _downloads[gid]["thread"] = t
         t.start()
 
-        return web.json_response({"ok": True, "gid": gid, "state": "running", "msg": "Download started…"})
+        return web.json_response({"ok": True, "gid": gid, "state": "running", "msg": "Download started..."})
     except Exception as e:
-        return web.json_response({"ok": False, "error": f"{type(e).__name__}: {e}"}, status=500)
+        return web.json_response({"ok": False, "error": "{}: {}".format(type(e).__name__, e)}, status=500)
 
 async def status_download(request: web.Request):
-    """
-    GET /hf/status?gid=...
-    Returns only coarse state, no progress fields.
-    """
     gid = request.query.get("gid", "")
     if gid not in _downloads:
         return web.json_response({"ok": False, "error": "unknown gid"}, status=404)
@@ -95,37 +87,37 @@ async def status_download(request: web.Request):
     })
 
 async def stop_download(request: web.Request):
-    """
-    POST /hf/stop { gid }
-    Best effort: cannot forcibly kill hf_hub_download; mark as stopped.
-    """
     try:
         data = await request.json()
         gid = (data.get("gid") or "").strip()
         if gid not in _downloads:
             return web.json_response({"ok": False, "error": "unknown gid"}, status=404)
         info = _downloads[gid]
-        t: threading.Thread | None = info.get("thread")
+        t = info.get("thread")
         if t and t.is_alive():
             _set(gid, state="stopped", msg="Stop requested by user.")
         else:
             _set(gid, state="stopped", msg="Already finished.")
         return web.json_response({"ok": True, "gid": gid, "state": _get(gid, "state"), "msg": _get(gid, "msg")})
     except Exception as e:
-        return web.json_response({"ok": False, "error": f"{type(e).__name__}: {e}"}, status=500)
+        return web.json_response({"ok": False, "error": "{}: {}".format(type(e).__name__, e)}, status=500)
 
-async def tokens_endpoint(request: web.Request):
-    hf_suffix = HF_TOKEN[-4:] if HF_TOKEN and len(HF_TOKEN) >= 4 else HF_TOKEN or ""
-    civit_suffix = CIVIT_TOKEN[-4:] if CIVIT_TOKEN and len(CIVIT_TOKEN) >= 4 else CIVIT_TOKEN or ""
-    return web.json_response({"hf": hf_suffix, "civit": civit_suffix})
+async def token_full(request: web.Request):
+    # Returns the full HF token so the UI can auto-fill
+    return web.json_response({"token": HF_TOKEN or ""})
 
-# ============ register with ComfyUI server ============
+async def token_suffix(request: web.Request):
+    # Optional: last 4 chars for a UI hint
+    suffix = HF_TOKEN[-4:] if HF_TOKEN and len(HF_TOKEN) >= 4 else HF_TOKEN or ""
+    return web.json_response({"hf": suffix})
+
 def _register_routes():
     app = PromptServer.instance.app
     app.router.add_post("/hf/start", start_download)
     app.router.add_get("/hf/status", status_download)
     app.router.add_post("/hf/stop", stop_download)
-    app.router.add_get("/tokens", tokens_endpoint)
+    app.router.add_get("/hf/token", token_full)   # full token
+    app.router.add_get("/hf/tokens", token_suffix)  # last-4 hint
 
 _register_routes()
 
