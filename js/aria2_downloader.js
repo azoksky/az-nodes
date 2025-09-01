@@ -1,19 +1,46 @@
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
 
+function fmtBytes(bytes) {
+  if (!bytes || bytes <= 0) return "0 B";
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  let i = 0, v = bytes;
+  while (v >= 1024 && i < units.length - 1) {
+    v /= 1024; i++;
+  }
+  const decimals = v < 10 && i > 0 ? 1 : 0;
+  return `${v.toFixed(decimals)} ${units[i]}`;
+}
+
+function fmtETA(sec) {
+  if (sec == null || !isFinite(sec)) return "—";
+  sec = Math.max(0, sec | 0);
+  const h = Math.floor(sec / 3600);
+  const m = Math.floor((sec % 3600) / 60);
+  const s = sec % 60;
+  if (h) return `${h}h ${m}m`;
+  if (m) return `${m}m ${s}s`;
+  return `${s}s`;
+}
+
 app.registerExtension({
   name: "comfyui.aria2.downloader",
   beforeRegisterNodeDef(nodeType, nodeData) {
     if (nodeData?.name !== "Aria2Downloader") return;
     const orig = nodeType.prototype.onNodeCreated;
+
     nodeType.prototype.onNodeCreated = function () {
       const r = orig ? orig.apply(this, arguments) : undefined;
 
+      // Persisted properties
       this.properties = this.properties || {};
       this.properties.url = this.properties.url || "";
       this.properties.token = this.properties.token || "";
       this.properties.dest_dir = this.properties.dest_dir || "";
       this.serialize_widgets = true;
+
+      // Poll timer holder
+      this._pollTimer = null;
 
       // --- Destination input with dropdown (portal) ---
       const container = document.createElement("div");
@@ -196,22 +223,23 @@ app.registerExtension({
       const tokenWidget = this.addDOMWidget("token", "TOKEN", tokenInput);
       tokenWidget.computeSize = () => [this.size[0] - 20, 34];
 
-      // Fetch and display token hint
+      // Token hint
       const hintWidget = this.addWidget("info", "Token Hint", "");
       api.fetchApi("/tokens")
         .then(res => res.json())
         .then(data => {
-          if (data.hf) {
-            this.properties.token = this.properties.token || "";
-            hintWidget.setValue(`••••${data.hf}`);
-          }
-        });
+          const hints = [];
+          if (data?.hf) hints.push(`HF …${data.hf}`);
+          if (data?.civit) hints.push(`Civit …${data.civit}`);
+          hintWidget.setValue(hints.join("  |  "));
+        })
+        .catch(() => {});
 
       // --- Spacer ---
       const spacer = this.addWidget("info", "", "");
       spacer.computeSize = () => [this.size[0] - 20, 10];
 
-      // --- Download button (no queue) ---
+      // --- State ---
       this.gid = null;
       this._status = "Idle";
       this._progress = 0;
@@ -220,6 +248,7 @@ app.registerExtension({
       this._filename = "";
       this._filepath = "";
 
+      // --- Actions ---
       this.addWidget("button", "Download", "Start", async () => {
         if (this.gid) return;
         const url = (urlInput.value || "").trim();
@@ -246,7 +275,6 @@ app.registerExtension({
           this._status = "Active";
           this.setDirtyCanvas(true);
 
-          // Poll status
           const poll = async () => {
             if (!this.gid) return;
             try {
@@ -265,13 +293,14 @@ app.registerExtension({
               if (s.filename) this._filename = s.filename;
               if (s.filepath) this._filepath = s.filepath;
               this.setDirtyCanvas(true);
+
               if (["complete", "error", "removed"].includes(this._status)) {
                 this.gid = null;
                 return;
               }
-              setTimeout(poll, 500);
+              this._pollTimer = setTimeout(poll, 500);
             } catch {
-              setTimeout(poll, 500);
+              this._pollTimer = setTimeout(poll, 500);
             }
           };
           poll();
@@ -279,6 +308,17 @@ app.registerExtension({
           this._status = `Error starting download`;
           this.setDirtyCanvas(true);
         }
+      });
+
+      this.addWidget("button", "Cancel", "Stop", async () => {
+        if (!this.gid) return;
+        try {
+          await api.fetchApi("/aria2/stop", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ gid: this.gid })
+          });
+        } catch {}
       });
 
       // Canvas size & drawing
@@ -344,8 +384,7 @@ app.registerExtension({
         if (oldRemoved) oldRemoved.apply(this, arguments);
       };
 
-      // Scroll/resize handlers to reposition dropdown
-      function onScroll(e) { placeDropdown(); }
+      function onScroll() { placeDropdown(); }
       function onResize() { placeDropdown(); }
       window.addEventListener("scroll", onScroll, true);
       window.addEventListener("resize", onResize);
