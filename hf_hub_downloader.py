@@ -1,6 +1,5 @@
 # -*- coding: utf-8 -*-
 import os
-import json
 import threading
 from uuid import uuid4
 from typing import Dict, Any, Optional
@@ -9,18 +8,21 @@ from aiohttp import web
 from server import PromptServer
 from huggingface_hub import hf_hub_download
 
-# Env tokens
+# Env token
 HF_TOKEN = os.environ.get("HF_READ_TOKEN", "")
 
 # Minimal in-memory job store
 _downloads: Dict[str, Dict[str, Any]] = {}  # gid -> {state, msg, filepath, thread}
 
+
 def _set(gid: str, **kw):
     _downloads.setdefault(gid, {})
     _downloads[gid].update(kw)
 
+
 def _get(gid: str, key: str, default=None):
     return _downloads.get(gid, {}).get(key, default)
+
 
 def _worker(gid: str, repo_id: str, filename: str, dest_dir: str, token: Optional[str]):
     try:
@@ -29,13 +31,15 @@ def _worker(gid: str, repo_id: str, filename: str, dest_dir: str, token: Optiona
             repo_id=repo_id,
             filename=filename,
             local_dir=dest_dir,
-            token=token or None
+            token=(token or None),
         )
         _set(gid, state="done", msg="File download complete.", filepath=local_path)
     except Exception as e:
         _set(gid, state="error", msg="{}: {}".format(type(e).__name__, e))
 
-# ============ routes ============
+
+# ============ routes (use PromptServer routes so they appear under /api/*) ============
+@PromptServer.instance.routes.post("/hf/start")
 async def start_download(request: web.Request):
     try:
         data = await request.json()
@@ -64,7 +68,6 @@ async def start_download(request: web.Request):
             "thread": None,
         }
 
-        # Start download in background thread
         t = threading.Thread(target=_worker, args=(gid, repo_id, filename, dest_dir, token), daemon=True)
         _downloads[gid]["thread"] = t
         t.start()
@@ -73,6 +76,8 @@ async def start_download(request: web.Request):
     except Exception as e:
         return web.json_response({"ok": False, "error": "{}: {}".format(type(e).__name__, e)}, status=500)
 
+
+@PromptServer.instance.routes.get("/hf/status")
 async def status_download(request: web.Request):
     gid = request.query.get("gid", "")
     if gid not in _downloads:
@@ -86,6 +91,8 @@ async def status_download(request: web.Request):
         "filepath": info.get("filepath"),
     })
 
+
+@PromptServer.instance.routes.post("/hf/stop")
 async def stop_download(request: web.Request):
     try:
         data = await request.json()
@@ -102,24 +109,20 @@ async def stop_download(request: web.Request):
     except Exception as e:
         return web.json_response({"ok": False, "error": "{}: {}".format(type(e).__name__, e)}, status=500)
 
+
+@PromptServer.instance.routes.get("/hf/token")
 async def token_full(request: web.Request):
-    # Returns the full HF token so the UI can auto-fill
+    # Full token for auto-fill
     return web.json_response({"token": HF_TOKEN or ""})
 
+
+@PromptServer.instance.routes.get("/hf/tokens")
 async def token_suffix(request: web.Request):
-    # Optional: last 4 chars for a UI hint
-    suffix = HF_TOKEN[-4:] if HF_TOKEN and len(HF_TOKEN) >= 4 else HF_TOKEN or ""
+    # Last-4 hint
+    tok = HF_TOKEN or ""
+    suffix = tok[-4:] if len(tok) >= 4 else tok
     return web.json_response({"hf": suffix})
 
-def _register_routes():
-    app = PromptServer.instance.app
-    app.router.add_post("/hf/start", start_download)
-    app.router.add_get("/hf/status", status_download)
-    app.router.add_post("/hf/stop", stop_download)
-    app.router.add_get("/hf/token", token_full)   # full token
-    app.router.add_get("/hf/tokens", token_suffix)  # last-4 hint
-
-_register_routes()
 
 # ============ UI node shell (no-op compute) ============
 class hf_hub_downloader:
