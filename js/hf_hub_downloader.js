@@ -8,21 +8,36 @@ function ensureActiveVisible(dropdown, activeIndex) {
   const bottom = top + el.offsetHeight;
   const viewTop = dropdown.scrollTop;
   const viewBottom = viewTop + dropdown.clientHeight;
-  if (top < viewTop) {
-    dropdown.scrollTop = top;
-  } else if (bottom > viewBottom) {
-    dropdown.scrollTop = bottom - dropdown.clientHeight;
-  }
+  if (top < viewTop) dropdown.scrollTop = top;
+  else if (bottom > viewBottom) dropdown.scrollTop = bottom - dropdown.clientHeight;
+}
+
+function injectCSSOnce() {
+  const id = "az-hf-css";
+  if (document.getElementById(id)) return;
+  const style = document.createElement("style");
+  style.id = id;
+  style.textContent =
+    ".az-row{width:100%}\
+     .az-btn{padding:8px 14px;border:1px solid #555;border-radius:6px;background:#2f75ff;color:#fff;cursor:pointer}\
+     .az-btn:disabled{opacity:.6;cursor:not-allowed}\
+     .az-btn-secondary{background:#333;color:#ddd}\
+     .az-flex{display:flex;gap:8px;align-items:center;justify-content:center;width:100%}\
+     .az-progress{width:100%;height:12px;border:1px solid #666;border-radius:6px;background:#222;overflow:hidden;display:none}\
+     .az-progress .bar{position:relative;height:100%;width:40%;background:linear-gradient(#9ec7ff,#4b90ff);animation:az-hf-indeterminate 1.2s infinite ease}\
+     @keyframes az-hf-indeterminate{0%{transform:translateX(-100%);width:40%}50%{transform:translateX(50%);width:60%}100%{transform:translateX(200%);width:40%}}";
+  document.head.appendChild(style);
 }
 
 app.registerExtension({
   name: "aznodes.hf_hub_downloader",
   beforeRegisterNodeDef(nodeType, nodeData) {
     if (!nodeData || nodeData.name !== "hf_hub_downloader") return;
-
     const orig = nodeType.prototype.onNodeCreated;
+
     nodeType.prototype.onNodeCreated = function () {
       const r = orig ? orig.apply(this, arguments) : undefined;
+      injectCSSOnce();
 
       // Persisted properties
       this.properties = this.properties || {};
@@ -32,31 +47,28 @@ app.registerExtension({
       this.properties.token = this.properties.token || "";
       this.serialize_widgets = true;
 
-      // Internal state
+      // State
       this.gid = null;
       this._pollTimer = null;
-      this._status = "Ready";
-      this._filepath = "";
       this._autoToken = (this.properties.token || "").trim() === "";
 
-      // Repo input
+      // Row height helpers to ensure enough space
+      const rowH = 40;
+      const smallRowH = 24;
+
+      // Repository input
       const repoInput = document.createElement("input");
       repoInput.type = "text";
       repoInput.placeholder = "Repository ID (e.g. runwayml/stable-diffusion-v1-5)";
       repoInput.value = this.properties.repo_id || "";
       Object.assign(repoInput.style, {
-        width: "100%",
-        height: "26px",
-        padding: "8px",
-        border: "1px solid #444",
-        borderRadius: "6px",
-        background: "var(--comfy-input-bg, #2a2a2a)",
-        color: "#ddd",
-        boxSizing: "border-box",
-        outline: "none"
+        width: "100%", height: "26px", padding: "8px",
+        border: "1px solid #444", borderRadius: "6px",
+        background: "var(--comfy-input-bg, #2a2a2a)", color: "#ddd",
+        boxSizing: "border-box", outline: "none"
       });
       const repoWidget = this.addDOMWidget("repo_id", "Repository", repoInput);
-      repoWidget.computeSize = () => [this.size[0] - 20, 34];
+      repoWidget.computeSize = () => [this.size[0] - 20, rowH];
       repoInput.addEventListener("input", () => {
         this.properties.repo_id = repoInput.value;
       });
@@ -67,69 +79,65 @@ app.registerExtension({
       fileInput.placeholder = "Filename (e.g. model.safetensors)";
       fileInput.value = this.properties.filename || "";
       Object.assign(fileInput.style, {
-        width: "100%",
-        height: "26px",
-        padding: "8px",
-        border: "1px solid #444",
-        borderRadius: "6px",
-        background: "var(--comfy-input-bg, #2a2a2a)",
-        color: "#ddd",
-        boxSizing: "border-box",
-        outline: "none"
+        width: "100%", height: "26px", padding: "8px",
+        border: "1px solid #444", borderRadius: "6px",
+        background: "var(--comfy-input-bg, #2a2a2a)", color: "#ddd",
+        boxSizing: "border-box", outline: "none"
       });
       const fileWidget = this.addDOMWidget("filename", "Filename", fileInput);
-      fileWidget.computeSize = () => [this.size[0] - 20, 34];
+      fileWidget.computeSize = () => [this.size[0] - 20, rowH];
       fileInput.addEventListener("input", () => {
         this.properties.filename = fileInput.value;
       });
 
-      // Token input
+      // Token input + hint (DOM row)
+      const tokenRow = document.createElement("div");
+      tokenRow.className = "az-row az-flex";
+
       const tokenInput = document.createElement("input");
       tokenInput.type = "password";
       tokenInput.placeholder = "HF Token (auto-filled from env if available)";
       tokenInput.value = this.properties.token || "";
       Object.assign(tokenInput.style, {
-        width: "100%",
-        height: "26px",
-        padding: "8px",
-        border: "1px solid #444",
-        borderRadius: "6px",
-        background: "var(--comfy-input-bg, #2a2a2a)",
-        color: "#ddd",
-        boxSizing: "border-box",
-        outline: "none"
+        flex: "1", height: "26px", padding: "8px",
+        border: "1px solid #444", borderRadius: "6px",
+        background: "var(--comfy-input-bg, #2a2a2a)", color: "#ddd",
+        boxSizing: "border-box", outline: "none"
       });
-      const tokenWidget = this.addDOMWidget("token", "Token", tokenInput);
-      tokenWidget.computeSize = () => [this.size[0] - 20, 34];
+
+      const tokenHint = document.createElement("span");
+      tokenHint.style.color = "#888";
+      tokenHint.style.fontSize = "12px";
+
+      tokenRow.appendChild(tokenInput);
+      tokenRow.appendChild(tokenHint);
+      const tokenWidget = this.addDOMWidget("token", "Token", tokenRow);
+      tokenWidget.computeSize = () => [this.size[0] - 20, rowH];
+
       tokenInput.addEventListener("input", () => {
         this._autoToken = false;
         this.properties.token = tokenInput.value;
       });
 
-      // Token hint
-      const hintWidget = this.addWidget("info", "Token Hint", "");
-
-      // Auto-fill token from env on node display
+      // Fetch token (full) and hint on node display
       api.fetchApi("/hf/token")
-        .then(function(res){ return res.json(); })
+        .then(function (res) { return res.json(); })
         .then((data) => {
-          const tok = data && data.token ? data.token : "";
+          const tok = (data && data.token) ? data.token : "";
           if (tok && (this._autoToken || tokenInput.value.trim() === "")) {
             tokenInput.value = tok;
             this.properties.token = tok;
             this._autoToken = true;
           }
         })
-        .catch(function(){});
-      // Optional hint of last 4 chars
+        .catch(function () { });
+
       api.fetchApi("/hf/tokens")
-        .then(function(res){ return res.json(); })
+        .then(function (res) { return res.json(); })
         .then((data) => {
-          if (data && data.hf) {
-            hintWidget.setValue("HF ..." + data.hf);
-          }
+          if (data && data.hf) tokenHint.textContent = "HF ..." + data.hf;
         })
-        .catch(function(){});
+        .catch(function () { });
 
       // Destination input with dropdown
       const container = document.createElement("div");
@@ -140,30 +148,18 @@ app.registerExtension({
       destInput.placeholder = "Destination folder (e.g. ./models)";
       destInput.value = this.properties.dest_dir || "";
       Object.assign(destInput.style, {
-        width: "100%",
-        height: "26px",
-        padding: "8px",
-        border: "1px solid #444",
-        borderRadius: "6px",
-        background: "var(--comfy-input-bg, #2a2a2a)",
-        color: "#ddd",
-        boxSizing: "border-box",
-        outline: "none"
+        width: "100%", height: "26px", padding: "8px",
+        border: "1px solid #444", borderRadius: "6px",
+        background: "var(--comfy-input-bg, #2a2a2a)", color: "#ddd",
+        boxSizing: "border-box", outline: "none"
       });
 
       const dropdown = document.createElement("div");
       Object.assign(dropdown.style, {
-        position: "fixed",
-        background: "#222",
-        border: "1px solid #555",
-        display: "none",
-        maxHeight: "200px",
-        overflowY: "auto",
-        fontSize: "12px",
-        borderRadius: "6px",
-        boxShadow: "0 8px 16px rgba(0,0,0,.35)",
-        zIndex: "999999",
-        minWidth: "180px"
+        position: "fixed", background: "#222", border: "1px solid #555",
+        display: "none", maxHeight: "200px", overflowY: "auto", fontSize: "12px",
+        borderRadius: "6px", boxShadow: "0 8px 16px rgba(0,0,0,.35)",
+        zIndex: "999999", minWidth: "180px"
       });
       document.body.appendChild(dropdown);
 
@@ -176,7 +172,7 @@ app.registerExtension({
 
       container.appendChild(destInput);
       const destWidget = this.addDOMWidget("dest_dir", "Destination", container);
-      destWidget.computeSize = () => [this.size[0] - 20, 34];
+      destWidget.computeSize = () => [this.size[0] - 20, rowH];
 
       let items = [];
       let active = -1;
@@ -195,11 +191,8 @@ app.registerExtension({
           const row = document.createElement("div");
           row.textContent = it.name;
           Object.assign(row.style, {
-            padding: "6px 10px",
-            cursor: "pointer",
-            whiteSpace: "nowrap",
-            background: idx === active ? "#444" : "transparent",
-            userSelect: "none"
+            padding: "6px 10px", cursor: "pointer", whiteSpace: "nowrap",
+            background: idx === active ? "#444" : "transparent", userSelect: "none"
           });
           row.addEventListener("mousedown", (e) => {
             e.preventDefault();
@@ -306,22 +299,91 @@ app.registerExtension({
         setTimeout(function () { dropdown.style.display = "none"; }, 120);
       });
 
-      // Buttons
-      this.addWidget("button", "Download", "Start", async () => {
+      // Buttons row (DOM buttons)
+      const btnRow = document.createElement("div");
+      btnRow.className = "az-row az-flex";
+
+      const downloadBtn = document.createElement("button");
+      downloadBtn.className = "az-btn";
+      downloadBtn.textContent = "Download";
+
+      const stopBtn = document.createElement("button");
+      stopBtn.className = "az-btn az-btn-secondary";
+      stopBtn.textContent = "Stop";
+      stopBtn.disabled = true;
+
+      btnRow.appendChild(downloadBtn);
+      btnRow.appendChild(stopBtn);
+
+      const btnWidget = this.addDOMWidget("actions", "", btnRow);
+      btnWidget.computeSize = () => [this.size[0] - 20, rowH];
+
+      // Progress row (indeterminate)
+      const progress = document.createElement("div");
+      progress.className = "az-progress";
+      const bar = document.createElement("div");
+      bar.className = "bar";
+      progress.appendChild(bar);
+
+      const progressWidget = this.addDOMWidget("progress", "", progress);
+      progressWidget.computeSize = () => [this.size[0] - 20, smallRowH];
+
+      // Status row (DOM text)
+      const statusEl = document.createElement("div");
+      statusEl.style.color = "#ccc";
+      statusEl.style.fontSize = "12px";
+      statusEl.style.width = "100%";
+      statusEl.style.textAlign = "center";
+      statusEl.textContent = "Ready";
+
+      const statusWidget = this.addDOMWidget("status", "", statusEl);
+      statusWidget.computeSize = () => [this.size[0] - 20, smallRowH];
+
+      const setDownloading = (on) => {
+        downloadBtn.disabled = on;
+        stopBtn.disabled = !on;
+        progress.style.display = on ? "block" : "none";
+      };
+
+      const startPoll = () => {
+        const poll = async () => {
+          if (!this.gid) return;
+          try {
+            const res = await api.fetchApi("/hf/status?gid=" + encodeURIComponent(this.gid));
+            const s = await res.json();
+            if (!s.ok) {
+              statusEl.textContent = "Error: " + (s.error || "Unknown");
+              this.gid = null;
+              setDownloading(false);
+              return;
+            }
+            statusEl.textContent = s.msg || s.state || "running";
+            if (s.state === "done" || s.state === "error" || s.state === "stopped") {
+              this.gid = null;
+              setDownloading(false);
+              return;
+            }
+            this._pollTimer = setTimeout(poll, 900);
+          } catch (e) {
+            this._pollTimer = setTimeout(poll, 1100);
+          }
+        };
+        poll();
+      };
+
+      // Button events
+      downloadBtn.addEventListener("click", async () => {
         if (this.gid) return;
         const repo_id = (repoInput.value || "").trim();
         const filename = (fileInput.value || "").trim();
         const dest_dir = (destInput.value || "").trim();
         const token = (tokenInput.value || "").trim();
         if (!repo_id || !filename || !dest_dir) {
-          this._status = "Please fill all fields";
-          this.setDirtyCanvas(true);
+          statusEl.textContent = "Please fill all fields";
           return;
         }
-        this._status = "Starting...";
-        this._filepath = "";
-        this.setDirtyCanvas(true);
-
+        statusEl.textContent = "Starting...";
+        setDownloading(true);
         try {
           const res = await api.fetchApi("/hf/start", {
             method: "POST",
@@ -330,85 +392,58 @@ app.registerExtension({
           });
           const out = await res.json();
           if (!res.ok || !out.ok) {
-            this._status = "Error: " + (out.error || res.status);
-            this.setDirtyCanvas(true);
+            statusEl.textContent = "Error: " + (out.error || res.status);
+            setDownloading(false);
             return;
           }
           this.gid = out.gid;
-          this._status = "Running";
-          this.setDirtyCanvas(true);
-
-          const poll = async () => {
-            if (!this.gid) return;
-            try {
-              const sRes = await api.fetchApi("/hf/status?gid=" + encodeURIComponent(this.gid));
-              const s = await sRes.json();
-              if (!s.ok) {
-                this._status = "Error: " + (s.error || "Unknown");
-                this.gid = null;
-                this.setDirtyCanvas(true);
-                return;
-              }
-              this._status = s.msg || s.state || "running";
-              this._filepath = s.filepath || "";
-              this.setDirtyCanvas(true);
-              if (s.state === "done" || s.state === "error" || s.state === "stopped") {
-                this.gid = null;
-                return;
-              }
-              this._pollTimer = setTimeout(poll, 800);
-            } catch (e) {
-              this._pollTimer = setTimeout(poll, 1000);
-            }
-          };
-          poll();
+          statusEl.textContent = "Download started...";
+          startPoll();
         } catch (e) {
-          this._status = "Error starting: " + e.message;
-          this.setDirtyCanvas(true);
+          statusEl.textContent = "Error starting: " + e.message;
+          setDownloading(false);
         }
       });
 
-      this.addWidget("button", "Cancel", "Stop", async () => {
-        if (!this.gid) return;
+      stopBtn.addEventListener("click", async () => {
+        if (!this.gid) {
+          setDownloading(false);
+          statusEl.textContent = "Stopped.";
+          return;
+        }
         try {
           await api.fetchApi("/hf/stop", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ gid: this.gid })
           });
-        } catch (e) {}
+          statusEl.textContent = "Stopped.";
+        } catch (e) {
+          statusEl.textContent = "Error stopping: " + e.message;
+        } finally {
+          setDownloading(false);
+          this.gid = null;
+        }
       });
 
-      // Canvas draw
-      this.size = [480, 220];
-      this.onDrawForeground = (ctx) => {
-        const pad = 10;
-        ctx.font = "12px sans-serif";
-        ctx.fillStyle = "#bbb";
-        ctx.textAlign = "left";
-        ctx.textBaseline = "top";
-        const s1 = "Status: " + (this._status || "");
-        ctx.fillText(s1, pad, this.size[1] - 44);
-        if (this._filepath) {
-          ctx.fillStyle = "#8fa3b7";
-          ctx.fillText("Saved: " + this._filepath, pad, this.size[1] - 26);
-        }
-      };
-
-      // Cleanup on removal
-      const oldRemoved = this.onRemoved;
+      // Reposition dropdown on scroll/resize
       const onScroll = () => { placeDropdown(); };
       const onResize = () => { placeDropdown(); };
       window.addEventListener("scroll", onScroll, true);
       window.addEventListener("resize", onResize);
 
+      // Cleanup
+      const oldRemoved = this.onRemoved;
       this.onRemoved = function () {
         if (this._pollTimer) clearTimeout(this._pollTimer);
-        try { if (dropdown.parentNode) dropdown.parentNode.removeChild(dropdown); } catch (e) {}
+        try { if (dropdown && dropdown.parentNode) dropdown.parentNode.removeChild(dropdown); } catch (e) { }
         window.removeEventListener("scroll", onScroll, true);
         window.removeEventListener("resize", onResize);
         if (oldRemoved) oldRemoved.apply(this, arguments);
       };
+
+      // Good default size (DOM rows control actual height)
+      this.size = [520, 280];
 
       return r;
     };
