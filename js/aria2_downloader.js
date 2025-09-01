@@ -1,347 +1,491 @@
-# -*- coding: utf-8 -*-
-import os
-import re
-import json
-import time
-import shutil
-import urllib.request
-import urllib.parse
-from urllib.parse import urlparse, urlunparse
-from uuid import uuid4
-from subprocess import Popen, DEVNULL
+import { app } from "../../scripts/app.js";
+import { api } from "../../scripts/api.js";
 
-from aiohttp import web
-from server import PromptServer
+function fmtBytes(bytes) {
+  if (!bytes || bytes <= 0) return "0 B";
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  let i = 0, v = bytes;
+  while (v >= 1024 && i < units.length - 1) {
+    v /= 1024; i++;
+  }
+  const decimals = v < 10 && i > 0 ? 1 : 0;
+  return v.toFixed(decimals) + " " + units[i];
+}
 
-# ========= Config =========
-ARIA2_SECRET = os.environ.get("COMFY_ARIA2_SECRET", "comfyui_aria2_secret")
-HF_TOKEN = os.environ.get("HF_READ_TOKEN", "")
-CIVIT_TOKEN = os.environ.get("CIVIT_TOKEN", "")
-ARIA2_RPC_URL = os.environ.get("COMFY_ARIA2_RPC", "http://127.0.0.1:6800/jsonrpc")
-ARIA2_BIN = shutil.which("aria2c") or "aria2c"
-RPC_START_ARGS = [
-    ARIA2_BIN,
-    "--enable-rpc=true",
-    "--rpc-listen-all=false",
-    f"--rpc-secret={ARIA2_SECRET}",
-    "--daemon=true",
-    "--console-log-level=error",
-    "--disable-ipv6=true",
-]
+function fmtETA(sec) {
+  if (sec == null || !isFinite(sec)) return "--";
+  sec = Math.max(0, sec | 0);
+  const h = Math.floor(sec / 3600);
+  const m = Math.floor((sec % 3600) / 60);
+  const s = sec % 60;
+  if (h) return h + "h " + m + "m";
+  if (m) return m + "m " + s + "s";
+  return s + "s";
+}
 
-# ========= RPC helper =========
-def _aria2_rpc(method, params=None):
-    payload = {
-        "jsonrpc": "2.0",
-        "id": str(uuid4()),
-        "method": f"aria2.{method}",
-        "params": [f"token:{ARIA2_SECRET}"] + (params or []),
-    }
-    data = json.dumps(payload).encode("utf-8")
-    req = urllib.request.Request(
-        ARIA2_RPC_URL, data=data, headers={"Content-Type": "application/json"}
-    )
-    with urllib.request.urlopen(req, timeout=10) as resp:
-        return json.loads(resp.read().decode("utf-8"))
+app.registerExtension({
+  name: "comfyui.aria2.downloader",
+  beforeRegisterNodeDef(nodeType, nodeData) {
+    if (!nodeData || nodeData.name !== "Aria2Downloader") return;
+    const orig = nodeType.prototype.onNodeCreated;
 
-def _ensure_aria2_daemon():
-    try:
-        _aria2_rpc("getVersion")
-        return
-    except Exception:
-        pass
-    if not shutil.which(ARIA2_BIN):
-        raise RuntimeError("aria2c not found in PATH. Please install aria2c.")
-    Popen(RPC_START_ARGS, stdout=DEVNULL, stderr=DEVNULL)
-    t0 = time.time()
-    while time.time() - t0 < 3.0:
-        try:
-            _aria2_rpc("getVersion")
-            return
-        except Exception:
-            time.sleep(0.15)
-    _aria2_rpc("getVersion")  # raise if still not up
+    nodeType.prototype.onNodeCreated = function () {
+      const r = orig ? orig.apply(this, arguments) : undefined;
 
-# ========= Filename helpers =========
-_SANITIZE_RE = re.compile(r'[\\/:*?"<>|\x00-\x1F]')
+      // Persisted properties
+      this.properties = this.properties || {};
+      this.properties.url = this.properties.url || "";
+      this.properties.token = this.properties.token || "";
+      this.properties.dest_dir = this.properties.dest_dir || "";
+      this.serialize_widgets = true;
 
-def _sanitize_filename(name: str) -> str:
-    return _SANITIZE_RE.sub("_", name).strip()
+      // Poll timer holder and token auto-fill state
+      this._pollTimer = null;
+      this._autoToken = !this.properties.token;
 
-def _safe_expand(path_str: str) -> str:
-    return os.path.abspath(os.path.expanduser(path_str or ""))
+      // --- Destination input with dropdown (portal) ---
+      const container = document.createElement("div");
+      Object.assign(container.style, { position: "relative", width: "100%" });
 
-def _parse_cd_filename(cd: str):
-    if not cd:
-        return None
-    # RFC 5987: filename*=UTF-8''percent-encoded
-    m = re.search(r"filename\*\s*=\s*[^'\";]+''([^;]+)", cd, flags=re.IGNORECASE)
-    if m:
-        try:
-            decoded = urllib.parse.unquote(m.group(1))
-            n = _sanitize_filename(os.path.basename(decoded))
-            return n or None
-        except Exception:
-            pass
-    # filename="name"
-    m = re.search(r'filename\s*=\s*"([^"]+)"', cd, flags=re.IGNORECASE)
-    if m:
-        n = _sanitize_filename(os.path.basename(m.group(1)))
-        return n or None
-    # filename=name
-    m = re.search(r'filename\s*=\s*([^;]+)', cd, flags=re.IGNORECASE)
-    if m:
-        n = _sanitize_filename(os.path.basename(m.group(1).strip()))
-        return n or None
-    return None
+      const destInput = document.createElement("input");
+      destInput.type = "text";
+      destInput.placeholder = "Destination folder (e.g. C:/Users/you/Downloads)";
+      Object.assign(destInput.style, {
+        width: "100%",
+        height: "26px",
+        padding: "8px",
+        border: "1px solid #444",
+        borderRadius: "6px",
+        background: "var(--comfy-input-bg, #2a2a2a)",
+        color: "#ddd",
+        boxSizing: "border-box",
+        outline: "none"
+      });
+      destInput.value = this.properties.dest_dir || "";
 
-def _origin_from_url(u: str) -> str:
-    try:
-        p = urlparse(u)
-        return urlunparse((p.scheme, p.netloc, "/", "", "", ""))
-    except Exception:
-        return ""
+      const dropdown = document.createElement("div");
+      Object.assign(dropdown.style, {
+        position: "fixed",
+        background: "#222",
+        border: "1px solid #555",
+        zIndex: "999999",
+        display: "none",
+        maxHeight: "200px",
+        overflowY: "auto",
+        fontSize: "12px",
+        borderRadius: "6px",
+        minWidth: "180px",
+        boxShadow: "0 8px 16px rgba(0,0,0,.35)"
+      });
+      document.body.appendChild(dropdown);
 
-def _extract_query_filename(u: str):
-    try:
-        q = urllib.parse.parse_qs(urlparse(u).query)
-        for key in ("filename", "file", "name", "response-content-disposition"):
-            if key in q and q[key]:
-                candidate = q[key][0]
-                if key == "response-content-disposition":
-                    n = _parse_cd_filename(candidate)
-                    if n:
-                        return n
-                n = _sanitize_filename(os.path.basename(candidate))
-                if n:
-                    return n
-    except Exception:
-        pass
-    return None
+      const placeDropdown = () => {
+        const rct = destInput.getBoundingClientRect();
+        dropdown.style.left = rct.left + "px";
+        dropdown.style.top = (rct.bottom + 2) + "px";
+        dropdown.style.width = rct.width + "px";
+      };
 
-def _head_follow(url: str, max_redirects: int = 5, token: str | None = None):
-    opener = urllib.request.build_opener()
-    headers = {"Authorization": f"Bearer {token}"} if token else {}
-    req = urllib.request.Request(url, method="HEAD", headers=headers)
-    try:
-        return opener.open(req, timeout=10)
-    except urllib.error.HTTPError as e:
-        if e.code in (403, 405):
-            req_get = urllib.request.Request(url, method="GET", headers=headers)
-            return opener.open(req_get, timeout=10)
-        raise
+      container.appendChild(destInput);
+      const destWidget = this.addDOMWidget("dest_dir", "Destination", container);
+      destWidget.computeSize = () => [this.size[0] - 20, 34];
 
-def _smart_guess_filename(url: str, token: str | None = None):
-    # 1) Query param hints
-    qn = _extract_query_filename(url)
-    if qn:
-        return (qn, True)
-    # 2) HEAD/GET headers
-    try:
-        resp = _head_follow(url, token=token)
-        cd = resp.headers.get("Content-Disposition") or resp.headers.get("content-disposition")
-        n = _parse_cd_filename(cd) if cd else None
-        if n:
-            return (n, True)
-    except Exception:
-        pass
-    # 3) URL path (not confident)
-    try:
-        path_name = os.path.basename(urlparse(url).path)
-        path_name = _sanitize_filename(path_name)
-        if path_name:
-            return (path_name, False)
-    except Exception:
-        pass
-    return (None, False)
+      let items = [], active = -1, debounceTimer = null;
 
-def _eta(total_len, done_len, speed):
-    try:
-        total = int(total_len); done = int(done_len); spd = max(int(speed), 1)
-        remain = max(total - done, 0)
-        return remain // spd
-    except Exception:
-        return None
+      const ensureActiveVisible = () => {
+        if (active >= 0 && active < dropdown.children.length) {
+          const el = dropdown.children[active];
+          const top = el.offsetTop;
+          const bottom = top + el.offsetHeight;
+          const viewTop = dropdown.scrollTop;
+          const viewBottom = viewTop + dropdown.clientHeight;
+          if (top < viewTop) {
+            dropdown.scrollTop = top;
+          } else if (bottom > viewBottom) {
+            dropdown.scrollTop = bottom - dropdown.clientHeight;
+          }
+        }
+      };
 
-# ========= API routes =========
-@PromptServer.instance.routes.post("/aria2/start")
-async def aria2_start(request):
-    body = await request.json()
-    url = (body.get("url") or "").strip()
-    dest_dir = _safe_expand(body.get("dest_dir") or os.getcwd())
-    token = (body.get("token") or "").strip()
+      const renderDropdown = () => {
+        const prevScrollTop = dropdown.scrollTop;
+        dropdown.innerHTML = "";
+        if (!items.length) {
+          dropdown.style.display = "none";
+          active = -1;
+          return;
+        }
+        items.forEach((it, idx) => {
+          const row = document.createElement("div");
+          row.textContent = it.name;
+          Object.assign(row.style, {
+            padding: "6px 10px",
+            cursor: "pointer",
+            whiteSpace: "nowrap",
+            background: idx === active ? "#444" : "transparent",
+            userSelect: "none"
+          });
+          row.addEventListener("pointerdown", (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            const chosen = it.path.replace(/\\/g, "/").replace(/\/{2,}/g, "/");
+            destInput.value = chosen;
+            this.properties.dest_dir = chosen;
+            items = [];
+            active = -1;
+            dropdown.style.display = "none";
+            scheduleFetch();
+          });
+          row.onmouseenter = () => {
+            active = idx;
+            renderDropdown();
+          };
+          dropdown.appendChild(row);
+        });
+        placeDropdown();
+        dropdown.style.display = "block";
+        dropdown.scrollTop = prevScrollTop;
+        ensureActiveVisible();
+      };
 
-    if not url:
-        return web.json_response({"error": "URL is required."}, status=400)
+      const scheduleFetch = () => {
+        clearTimeout(debounceTimer);
+        debounceTimer = setTimeout(fetchChildren, 180);
+      };
 
-    # Determine token if not provided
-    if not token:
-        lower = url.lower()
-        if ("huggingface.co" in lower) or ("cdn-lfs.huggingface.co" in lower):
-            token = HF_TOKEN
-        elif "civitai.com" in lower:
-            token = CIVIT_TOKEN
+      const fetchChildren = async () => {
+        const raw = destInput.value.trim();
+        if (!raw) {
+          items = [];
+          renderDropdown();
+          return;
+        }
+        const val = raw.replace(/\\/g, "/").replace(/\/{2,}/g, "/");
+        try {
+          const resp = await api.fetchApi("/az/listdir?path=" + encodeURIComponent(val));
+          const data = await resp.json();
+          if (data && data.ok && Array.isArray(data.folders)) {
+            items = data.folders.map((f) => ({ name: f.name, path: (data.root || val) + "/" + f.name }));
+          } else {
+            items = [];
+          }
+        } catch (e) {
+          items = [];
+        }
+        active = items.length ? 0 : -1;
+        renderDropdown();
+      };
 
-    try:
-        os.makedirs(dest_dir, exist_ok=True)
-    except Exception as e:
-        return web.json_response({"error": f"Cannot access destination: {e}"}, status=400)
-    if not os.path.isdir(dest_dir) or not os.access(dest_dir, os.W_OK):
-        return web.json_response({"error": f"Destination not writable: {dest_dir}"}, status=400)
+      destInput.addEventListener("input", () => {
+        const raw = destInput.value;
+        const prevStart = destInput.selectionStart;
+        const normalized = raw.replace(/\\/g, "/").replace(/\/{2,}/g, "/");
+        if (normalized !== raw) {
+          const delta = normalized.length - raw.length;
+          destInput.value = normalized;
+          const pos = Math.max(0, (prevStart || 0) + delta);
+          destInput.setSelectionRange(pos, pos);
+        }
+        this.properties.dest_dir = destInput.value;
+        placeDropdown();
+        scheduleFetch();
+      });
 
-    try:
-        _ensure_aria2_daemon()
-    except Exception as e:
-        return web.json_response({"error": str(e)}, status=500)
+      destInput.addEventListener("focus", () => {
+        placeDropdown();
+        scheduleFetch();
+      });
 
-    guessed_name, confident = _smart_guess_filename(url, token=token)
+      destInput.addEventListener("keydown", (e) => {
+        if (dropdown.style.display !== "block" || !items.length) return;
+        if (e.key === "ArrowDown") {
+          e.preventDefault();
+          active = (active + 1) % items.length;
+          renderDropdown();
+          ensureActiveVisible();
+        } else if (e.key === "ArrowUp") {
+          e.preventDefault();
+          active = (active - 1 + items.length) % items.length;
+          renderDropdown();
+          ensureActiveVisible();
+        } else if (e.key === "Enter" && active >= 0) {
+          e.preventDefault();
+          const it = items[active];
+          const chosen = it.path.replace(/\\/g, "/").replace(/\/{2,}/g, "/");
+          destInput.value = chosen;
+          this.properties.dest_dir = chosen;
+          items = [];
+          active = -1;
+          dropdown.style.display = "none";
+          scheduleFetch();
+        } else if (e.key === "Escape") {
+          dropdown.style.display = "none";
+          items = [];
+          active = -1;
+        }
+      });
 
-    opts = {
-        "continue": "true",
-        "max-connection-per-server": "16",
-        "split": "16",
-        "dir": dest_dir,
-        "auto-file-renaming": "true",
-        "remote-time": "true",
-        "content-disposition-default-utf8": "true",
-        "header": [
-            "Accept: */*",
-            "Accept-Language: en-US,en;q=0.9",
-            "User-Agent: Mozilla/5.0"
-        ],
-        "max-tries": "5",
-    }
-    if token:
-        opts["header"].append(f"Authorization: Bearer {token}")
-    origin = _origin_from_url(url)
-    if origin:
-        opts["referer"] = origin
-    if confident and guessed_name:
-        opts["out"] = guessed_name
+      destInput.addEventListener("blur", () => {
+        setTimeout(() => {
+          dropdown.style.display = "none";
+        }, 120);
+      });
 
-    try:
-        res = _aria2_rpc("addUri", [[url], opts])
-        gid = res.get("result")
-        if not gid:
-            return web.json_response({"error": "aria2c did not return a gid."}, status=500)
-        return web.json_response({
-            "gid": gid,
-            "dest_dir": dest_dir,
-            "guessed_out": opts.get("out", "") or "",
-            "confident": bool(confident),
+      // --- URL input ---
+      const urlInput = document.createElement("input");
+      urlInput.type = "text";
+      urlInput.placeholder = "URL";
+      Object.assign(urlInput.style, {
+        width: "100%",
+        height: "26px",
+        padding: "8px",
+        border: "1px solid #444",
+        borderRadius: "6px",
+        background: "var(--comfy-input-bg, #2a2a2a)",
+        color: "#ddd",
+        boxSizing: "border-box",
+        outline: "none"
+      });
+      urlInput.value = this.properties.url || "";
+      const urlWidget = this.addDOMWidget("url", "URL", urlInput);
+      urlWidget.computeSize = () => [this.size[0] - 20, 34];
+
+      // --- Token input ---
+      const tokenInput = document.createElement("input");
+      tokenInput.type = "password";
+      tokenInput.placeholder = "Secret Token";
+      Object.assign(tokenInput.style, {
+        width: "100%",
+        height: "26px",
+        padding: "8px",
+        border: "1px solid #444",
+        borderRadius: "6px",
+        background: "var(--comfy-input-bg, #2a2a2a)",
+        color: "#ddd",
+        boxSizing: "border-box",
+        outline: "none"
+      });
+      tokenInput.value = this.properties.token || "";
+      const tokenWidget = this.addDOMWidget("token", "TOKEN", tokenInput);
+      tokenWidget.computeSize = () => [this.size[0] - 20, 34];
+
+      tokenInput.addEventListener("input", () => {
+        this._autoToken = false;
+        this.properties.token = tokenInput.value;
+      });
+
+      // Token hint
+      const hintWidget = this.addWidget("info", "Token Hint", "");
+      api.fetchApi("/tokens")
+        .then((res) => res.json())
+        .then((data) => {
+          const hints = [];
+          if (data && data.hf) hints.push("HF ..." + data.hf);
+          if (data && data.civit) hints.push("Civit ..." + data.civit);
+          hintWidget.setValue(hints.join("  |  "));
         })
-    except Exception as e:
-        return web.json_response({"error": f"aria2c RPC error: {e}"}, status=500)
+        .catch(() => {});
 
-@PromptServer.instance.routes.get("/aria2/status")
-async def aria2_status(request):
-    gid = request.query.get("gid", "")
-    if not gid:
-        return web.json_response({"error": "gid is required."}, status=400)
-    try:
-        res = _aria2_rpc("tellStatus", [gid, ["status", "totalLength", "completedLength", "downloadSpeed", "errorMessage", "files", "dir"]])
-        st = res.get("result", {})
-    except Exception as e:
-        return web.json_response({"error": f"aria2c RPC error: {e}"}, status=500)
-    status = st.get("status", "unknown")
-    total = int(st.get("totalLength", "0") or "0")
-    done = int(st.get("completedLength", "0") or "0")
-    speed = int(st.get("downloadSpeed", "0") or "0")
-    percent = (done / total * 100.0) if total > 0 else (100.0 if status == "complete" else 0.0)
+      // Resolve token for URL and auto-fill if applicable
+      let urlDebounce = null;
+      const resolveAndApplyToken = async () => {
+        const url = (urlInput.value || "").trim();
+        if (!url) return;
+        try {
+          const resp = await api.fetchApi("/tokens/resolve?url=" + encodeURIComponent(url));
+          const data = await resp.json();
+          const tok = (data && data.token) ? data.token : "";
+          if (tok && (this._autoToken || tokenInput.value.trim() === "")) {
+            tokenInput.value = tok;
+            this.properties.token = tok;
+            this._autoToken = true;
+          }
+        } catch (e) {
+          // ignore
+        }
+      };
 
-    filepath = ""
-    filename = ""
-    files = st.get("files") or []
-    if files:
-        fp = files[0].get("path") or ""
-        if fp:
-            filepath = fp
-            filename = os.path.basename(fp)
-    if not filepath and st.get("dir") and filename:
-        filepath = os.path.join(st["dir"], filename)
+      const scheduleResolveToken = () => {
+        clearTimeout(urlDebounce);
+        urlDebounce = setTimeout(resolveAndApplyToken, 200);
+      };
 
-    out = {
-        "status": status,
-        "percent": round(percent, 2),
-        "completedLength": done,
-        "totalLength": total,
-        "downloadSpeed": speed,
-        "eta": _eta(total, done, speed),
-        "filename": filename,
-        "filepath": filepath,
-    }
-    if status == "error":
-        out["error"] = st.get("errorMessage", "unknown error")
-    return web.json_response(out)
+      urlInput.addEventListener("input", () => {
+        this.properties.url = urlInput.value;
+        scheduleResolveToken();
+      });
+      urlInput.addEventListener("paste", () => {
+        setTimeout(scheduleResolveToken, 0);
+      });
+      urlInput.addEventListener("blur", () => {
+        resolveAndApplyToken();
+      });
 
-@PromptServer.instance.routes.post("/aria2/stop")
-async def aria2_stop(request):
-    body = await request.json()
-    gid = (body.get("gid") or "").strip()
-    if not gid:
-        return web.json_response({"error": "gid is required."}, status=400)
-    try:
-        _aria2_rpc("remove", [gid])
-        return web.json_response({"ok": True})
-    except Exception as e:
-        return web.json_response({"error": f"aria2c RPC error: {e}"}, status=500)
+      // --- Spacer ---
+      const spacer = this.addWidget("info", "", "");
+      spacer.computeSize = () => [this.size[0] - 20, 10];
 
-@PromptServer.instance.routes.get("/az/listdir")
-async def az_listdir(request):
-    raw = request.query.get("path", "")
-    base = _safe_expand(raw)
-    if not base:
-        return web.json_response({"ok": True, "root": "", "folders": []})
+      // --- State ---
+      this.gid = null;
+      this._status = "Idle";
+      this._progress = 0;
+      this._speed = 0;
+      this._eta = null;
+      this._filename = "";
+      this._filepath = "";
 
-    root = base
-    if not os.path.isdir(root):
-        parent = os.path.dirname(root)
-        root = parent or base
+      // --- Actions ---
+      this.addWidget("button", "Download", "Start", async () => {
+        if (this.gid) return;
+        const url = (urlInput.value || "").trim();
+        const dest = (this.properties.dest_dir || "").trim();
+        if (!url) {
+          this._status = "Missing URL";
+          this.setDirtyCanvas(true);
+          return;
+        }
+        this._status = "Starting...";
+        this._progress = 0; this._speed = 0; this._eta = null;
+        this._filename = ""; this._filepath = "";
+        this.setDirtyCanvas(true);
 
-    folders = []
-    try:
-        for name in sorted(os.listdir(root)):
-            full = os.path.join(root, name)
-            if os.path.isdir(full):
-                folders.append({"name": name})
-    except Exception:
-        pass
+        try {
+          const resp = await api.fetchApi("/aria2/start", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ url: url, dest_dir: dest, token: (tokenInput.value || "").trim() })
+          });
+          const data = await resp.json();
+          if (!resp.ok || data.error) {
+            this._status = "Error: " + (data.error || resp.status);
+            this.setDirtyCanvas(true);
+            return;
+          }
+          this.gid = data.gid;
+          this._status = "Active";
+          this.setDirtyCanvas(true);
 
-    return web.json_response({
-        "ok": True,
-        "root": root.replace("\\", "/"),
-        "folders": folders
-    })
+          const poll = async () => {
+            if (!this.gid) return;
+            try {
+              const sResp = await api.fetchApi("/aria2/status?gid=" + encodeURIComponent(this.gid));
+              const s = await sResp.json();
+              if (s.error) {
+                this._status = "Error: " + s.error;
+                this.gid = null;
+                this.setDirtyCanvas(true);
+                return;
+              }
+              this._status = s.status || "active";
+              this._progress = s.percent || 0;
+              this._speed = s.downloadSpeed || 0;
+              this._eta = s.eta || null;
+              if (s.filename) this._filename = s.filename;
+              if (s.filepath) this._filepath = s.filepath;
+              this.setDirtyCanvas(true);
 
-@PromptServer.instance.routes.get("/tokens")
-async def tokens(request):
-    hf_suffix = HF_TOKEN[-4:] if HF_TOKEN and len(HF_TOKEN) >= 4 else HF_TOKEN or ""
-    civit_suffix = CIVIT_TOKEN[-4:] if CIVIT_TOKEN and len(CIVIT_TOKEN) >= 4 else CIVIT_TOKEN or ""
-    return web.json_response({"hf": hf_suffix, "civit": civit_suffix})
+              if (["complete", "error", "removed"].includes(this._status)) {
+                this.gid = null;
+                return;
+              }
+              this._pollTimer = setTimeout(poll, 500);
+            } catch (e) {
+              this._pollTimer = setTimeout(poll, 500);
+            }
+          };
+          poll();
+        } catch (e) {
+          this._status = "Error starting download";
+          this.setDirtyCanvas(true);
+        }
+      });
 
-@PromptServer.instance.routes.get("/tokens/resolve")
-async def tokens_resolve(request):
-    """Return the appropriate token for a given URL, so the UI can auto-fill."""
-    url = (request.query.get("url") or "").lower()
-    token = ""
-    kind = ""
-    if ("huggingface.co" in url) or ("cdn-lfs.huggingface.co" in url):
-        token = HF_TOKEN
-        kind = "hf"
-    elif "civitai.com" in url:
-        token = CIVIT_TOKEN
-        kind = "civit"
-    return web.json_response({"token": token or "", "kind": kind})
+      this.addWidget("button", "Cancel", "Stop", async () => {
+        if (!this.gid) return;
+        try {
+          await api.fetchApi("/aria2/stop", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ gid: this.gid })
+          });
+        } catch (e) {}
+      });
 
-# ========= UI-only node =========
-class Aria2Downloader:
-    @classmethod
-    def INPUT_TYPES(cls):
-        return {"required": {}}
+      // Canvas size & drawing
+      this.size = [480, 300];
+      this.onDrawForeground = (ctx) => {
+        const pad = 10;
+        const w = this.size[0] - pad * 2;
+        const barH = 14;
+        const yBar = this.size[1] - pad - barH - 4;
+        ctx.font = "12px sans-serif";
+        ctx.textAlign = "left";
+        ctx.textBaseline = "bottom";
+        ctx.fillStyle = "#bbb";
+        const meta = "Status: " + this._status + " • Speed: " + fmtBytes(this._speed) + "/s • ETA: " + fmtETA(this._eta);
+        ctx.fillText(meta, pad, yBar - 26);
+        if (this._filename || this._filepath) {
+          const show = this._filepath || this._filename;
+          ctx.fillStyle = "#8fa3b7";
+          ctx.fillText("Saved as: " + show, pad, yBar - 10);
+        }
+        // Draw progress bar
+        const radius = 7;
+        ctx.lineWidth = 1; ctx.strokeStyle = "#666";
+        ctx.beginPath();
+        ctx.moveTo(pad + radius, yBar);
+        ctx.lineTo(pad + w - radius, yBar);
+        ctx.quadraticCurveTo(pad + w, yBar, pad + w, yBar + radius);
+        ctx.lineTo(pad + w, yBar + barH - radius);
+        ctx.quadraticCurveTo(pad + w, yBar + barH, pad + w - radius, yBar + barH);
+        ctx.lineTo(pad + radius, yBar + barH);
+        ctx.quadraticCurveTo(pad, yBar + barH, pad, yBar + barH - radius);
+        ctx.lineTo(pad, yBar + radius);
+        ctx.quadraticCurveTo(pad, yBar, pad + radius, yBar);
+        ctx.closePath();
+        ctx.stroke();
+        // Fill bar
+        const pct = Math.max(0, Math.min(100, this._progress || 0));
+        const fillW = Math.round((w * pct) / 100);
+        ctx.save();
+        ctx.beginPath();
+        ctx.rect(pad + 1, yBar + 1, Math.max(0, fillW - 2), barH - 2);
+        const grad = ctx.createLinearGradient(pad, yBar, pad, yBar + barH);
+        grad.addColorStop(0, "#9ec7ff");
+        grad.addColorStop(1, "#4b90ff");
+        ctx.fillStyle = grad;
+        ctx.fill();
+        ctx.restore();
+        // Percentage text
+        ctx.font = "12px sans-serif";
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+        ctx.fillStyle = "#111";
+        ctx.fillText(pct.toFixed(0) + "%", pad + w / 2, yBar + barH / 2);
+      };
 
-    RETURN_TYPES = ()
-    FUNCTION = "noop"
-    CATEGORY = "AZ_Nodes"
+      // Cleanup on node removal
+      const oldRemoved = this.onRemoved;
+      this.onRemoved = function () {
+        if (this._pollTimer) clearTimeout(this._pollTimer);
+        if (dropdown.parentNode) dropdown.parentNode.removeChild(dropdown);
+        window.removeEventListener("scroll", onScroll, true);
+        window.removeEventListener("resize", onResize);
+        if (oldRemoved) oldRemoved.apply(this, arguments);
+      };
 
-    def noop(self):
-        return ()
+      function onScroll() { placeDropdown(); }
+      function onResize() { placeDropdown(); }
+      window.addEventListener("scroll", onScroll, true);
+      window.addEventListener("resize", onResize);
+
+      // Initial token resolve in case URL was persisted
+      if (this.properties.url && (!this.properties.token || this._autoToken)) {
+        urlInput.value = this.properties.url;
+        resolveAndApplyToken();
+      }
+
+      return r;
+    };
+  },
+});
