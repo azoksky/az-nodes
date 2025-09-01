@@ -238,14 +238,7 @@ app.registerExtension({
       }
     });
 
-    // hide shortly after blur so clicks register
-    const hideDropdownSoon = () => setTimeout(()=> { dropdown.style.display = "none"; }, 120);
-    destInput.addEventListener("blur", hideDropdownSoon);
-
-    const onScroll = () => {if (dropdown.style.display === "block" && document.body.contains(destInput)) {placeDropdown(); }};
-    const onResize = () => {if (dropdown.style.display === "block") placeDropdown();};
-    window.addEventListener("scroll", onScroll, true);
-    window.addEventListener("resize", onResize);
+     destInput.addEventListener("blur", ()=>{ setTimeout(()=>{ dropdown.style.display="none"; }, 120); });
 
     // Add DOM widget with fixed min height (unchanged)
     const MIN_W = 460;
