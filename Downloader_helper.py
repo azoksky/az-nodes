@@ -71,7 +71,7 @@ def _sanitize_filename(name: str) -> str:
 def _safe_expand(path_str: str) -> str:
     return os.path.abspath(os.path.expanduser(path_str or ""))
 
-def _parse_cd_filename(cd: str) -> str | None:
+def _parse_cd_filename(cd: str):
     if not cd:
         return None
     # RFC 5987: filename*=UTF-8''percent-encoded
@@ -102,7 +102,7 @@ def _origin_from_url(u: str) -> str:
     except Exception:
         return ""
 
-def _extract_query_filename(u: str) -> str | None:
+def _extract_query_filename(u: str):
     """Common patterns used by CDNs: ?filename=, ?response-content-disposition=attachment;filename=..."""
     try:
         q = urllib.parse.parse_qs(urlparse(u).query)
@@ -133,7 +133,7 @@ def _head_follow(url: str, max_redirects: int = 5, token: str | None = None):
             return opener.open(req_get, timeout=10)
         raise
 
-def _smart_guess_filename(url: str, token: str | None = None) -> tuple[str | None, bool]:
+def _smart_guess_filename(url: str, token: str | None = None):
     """
     Returns (name, confident).
     confident=True only when derived from Content-Disposition or explicit query filename.
@@ -294,6 +294,33 @@ async def aria2_stop(request):
     except Exception as e:
         return web.json_response({"error": f"aria2c RPC error: {e}"}, status=500)
 
+@PromptServer.instance.routes.get("/az/listdir")
+async def az_listdir(request):
+    raw = request.query.get("path", "")
+    base = _safe_expand(raw)
+    if not base:
+        return web.json_response({"ok": True, "root": "", "folders": []})
+
+    root = base
+    if not os.path.isdir(root):
+        parent = os.path.dirname(root)
+        root = parent or base
+
+    folders = []
+    try:
+        for name in sorted(os.listdir(root)):
+            full = os.path.join(root, name)
+            if os.path.isdir(full):
+                folders.append({"name": name})
+    except Exception:
+        pass
+
+    return web.json_response({
+        "ok": True,
+        "root": root.replace("\\", "/"),
+        "folders": folders
+    })
+
 @PromptServer.instance.routes.get("/tokens")
 async def tokens(request):
     hf_suffix = HF_TOKEN[-4:] if HF_TOKEN and len(HF_TOKEN) >= 4 else HF_TOKEN or ""
@@ -304,7 +331,7 @@ async def tokens(request):
 class Aria2Downloader:
     @classmethod
     def INPUT_TYPES(cls):
-        return {"required": {}}  # no backend auto-widgets
+        return {"required": {}}
 
     RETURN_TYPES = ()
     FUNCTION = "noop"
