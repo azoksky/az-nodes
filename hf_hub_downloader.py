@@ -9,7 +9,7 @@ from server import PromptServer
 from huggingface_hub import hf_hub_download
 
 # Env token
-HF_TOKEN = os.environ.get("HF_READ_TOKEN", "")
+HF_TOKEN = os.environ.get("HF_TOKEN", "")
 
 # Minimal in-memory job store
 _downloads: Dict[str, Dict[str, Any]] = {}  # gid -> {state, msg, filepath, thread}
