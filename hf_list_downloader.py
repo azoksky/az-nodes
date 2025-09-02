@@ -16,7 +16,7 @@ from urllib.error import URLError, HTTPError
 COMFY     = Path(os.environ.get("COMFYUI_PATH", "./ComfyUI")).resolve()
 WORKSPACE = COMFY.parent.resolve()
 MODELS    = Path(os.environ.get("COMFYUI_MODEL_PATH", str(COMFY / "models"))).resolve()
-HF_TOKEN  = os.environ.get("HF_READ_TOKEN") or None
+HF_TOKEN  = os.environ.get("HF_TOKEN") or None
 
 # Default list URL; can be overridden by env var DOWNLOAD_LIST
 LIST_URL_DEFAULT = "https://raw.githubusercontent.com/azoksky/az-nodes/refs/heads/main/other/runpod/download_list.txt"
