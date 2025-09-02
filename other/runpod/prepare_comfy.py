@@ -292,7 +292,7 @@ def download_models_if_enabled() -> None:
                 downloaded_path = hf_hub_download(
                     repo_id=repo_id,
                     filename=file_in_repo,
-                    token=os.environ.get("HF_READ_TOKEN"),
+                    token=os.environ.get("HF_TOKEN"),
                     local_dir=str(stage_dir / f"{idx:05d}")
                 )
                 src = Path(downloaded_path)
