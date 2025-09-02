@@ -16,7 +16,7 @@ from server import PromptServer
 
 # ========= Config =========
 ARIA2_SECRET = os.environ.get("COMFY_ARIA2_SECRET", "comfyui_aria2_secret")
-HF_TOKEN = os.environ.get("HF_READ_TOKEN", "")
+HF_TOKEN = os.environ.get("HF_TOKEN", "")
 CIVIT_TOKEN = os.environ.get("CIVIT_TOKEN", "")
 ARIA2_RPC_URL = os.environ.get("COMFY_ARIA2_RPC", "http://127.0.0.1:6800/jsonrpc")
 ARIA2_BIN = shutil.which("aria2c") or "aria2c"
@@ -487,3 +487,4 @@ class Aria2Downloader:
 
     def noop(self):
         return ()
+
