@@ -29,7 +29,7 @@ dl "$REQ_URL" "$REQ_DEST"
 dos2unix_inplace "$REQ_DEST"
 
 echo "Installing Python dependencies..."
-python3 -m pip install --no-cache-dir --prefer-binary -r "$REQ_DEST"
+python3 -m pip install --no-cache-dir --no-dependencies --prefer-binary -r "$REQ_DEST"
 
 # --- Get runner script ---
 echo "Downloading runner script from: $PY_URL"
