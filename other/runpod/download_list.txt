@@ -1,6 +1,6 @@
 azoksky/retention,wan/diffusion_models/I2V/Wan2_2-I2V-A14B-HIGH_fp8_e5m2_scaled_KJ.safetensors,diffusion_models
 azoksky/retention,wan/diffusion_models/I2V/Wan2_2-I2V-A14B-LOW_fp8_e5m2_scaled_KJ.safetensors,diffusion_models
-#azoksky/retention,wan/diffusion_models/T2V/Wan2_2-T2V-A14B-LOW_fp8_e5m2_scaled_KJ.safetensors,diffusion_models
+azoksky/retention,wan/diffusion_models/T2V/Wan2_2-T2V-A14B-LOW_fp8_e5m2_scaled_KJ.safetensors,diffusion_models
 #azoksky/retention,wan/loras/Lightx2v/lightx2v_T2V_14B_cfg_step_distill_v2_lora_rank64_bf16.safetensors,loras
 azoksky/retention,wan/loras/Wan22-Lightning/Wan2.2-Lightning_I2V-A14B-4steps-lora_HIGH_fp16.safetensors,loras
 azoksky/retention,wan/loras/Wan22-Lightning/Wan2.2-Lightning_I2V-A14B-4steps-lora_LOW_fp16.safetensors,loras
