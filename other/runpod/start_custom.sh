@@ -7,7 +7,7 @@ set -e  # Exit the script if any statement returns a non-true return value
 
 # Start nginx service
 start_nginx() {
-    echo "Starting Nginx service..."
+    echo "Starting Nginx service azok azok azok azok azok azok azok..."
     service nginx start
 }
 
