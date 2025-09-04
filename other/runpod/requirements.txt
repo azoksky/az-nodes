@@ -36,7 +36,6 @@ mediapipe
 mss
 notebook
 numba
-numpy
 omegaconf
 onnxruntime-gpu
 opencv-contrib-python
@@ -82,7 +81,6 @@ typer
 typing-extensions
 ultralytics
 uv
-xformers==0.0.32.post2
 yacs
 yapf
 yarl
