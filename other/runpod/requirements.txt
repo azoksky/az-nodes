@@ -36,7 +36,6 @@ mediapipe
 mss
 notebook
 numba
-numpy
 omegaconf
 onnxruntime-gpu
 opencv-contrib-python
