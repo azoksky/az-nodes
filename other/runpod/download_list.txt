@@ -15,3 +15,4 @@ comfyanonymous/flux_text_encoders,t5xxl_fp8_e4m3fn_scaled.safetensors,text_encod
 comfyanonymous/flux_text_encoders,clip_l.safetensors,text_encoders
 azoksky/loras_trained,lora.safetensors,loras
 Comfy-Org/Lumina_Image_2.0_Repackaged,split_files/vae/ae.safetensors,vae
+alimama-creative/FLUX.1-Turbo-Alpha,diffusion_pytorch_model.safetensors,loras
