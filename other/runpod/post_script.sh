@@ -1,0 +1,38 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+ensure_full_env_for_ssh() {
+  local out="/etc/profile.d/10-container-env.sh"
+  local src="/proc/1/environ"
+  [ -r "$src" ] || src="/proc/self/environ"
+
+  local tmp; tmp="$(mktemp "${out}.XXXXXX")"
+  {
+    tr '\0' '\n' < "$src" | awk '{
+      name=$0; sub(/=.*/, "", name);
+      val=$0;  sub(/^[^=]*=/, "", val);
+      gsub(/\\/, "\\\\", val); gsub(/"/, "\\\"", val);
+      printf("if [ -z \"${%s+x}\" ]; then export %s=\"%s\"; fi\n", name, name, val)
+    }'
+  } > "$tmp"
+
+  mv -f "$tmp" "$out"
+  chmod 0644 "$out"
+}
+
+ensure_full_env_for_ssh
+
+# your existing bits
+COMFYUI_PATH="${COMFYUI_PATH:-/workspace/ComfyUI}"
+WORKSPACE="$(dirname "$COMFYUI_PATH")"
+PY_URL="https://raw.githubusercontent.com/azoksky/az-nodes/refs/heads/main/other/runpod/prepare_comfy.py"
+PY_DEST="$WORKSPACE/prepare_comfy.py"
+
+curl -fsSL "$PY_URL" -o "$PY_DEST"
+sed -i 's/\r$//' "$PY_DEST"
+
+if [ "$$" -eq 1 ]; then
+  exec python3 -u "$PY_DEST" "$@"
+else
+  python3 -u "$PY_DEST" "$@"
+fi
